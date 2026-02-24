@@ -1,7 +1,9 @@
 # Gunicorn configuration for Render deployment
 # This file overrides default settings to prevent timeouts during heavy AI model loading.
 
-# bind = "0.0.0.0:10000" (Let Render handle the port via $PORT)
+import os
+port = os.environ.get("PORT", "10000")
+bind = f"0.0.0.0:{port}"
 workers = 1
 timeout = 600
 keepalive = 2
