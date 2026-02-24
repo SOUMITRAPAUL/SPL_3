@@ -7,7 +7,7 @@ import threading
 import traceback
 from flask import Flask, render_template, request, jsonify
 
-# Immediate startup signal
+# Immediate startup signal for logs
 print("--- FLASK BOOTSTRAP STARTING ---", flush=True)
 
 app = Flask(__name__)
@@ -31,8 +31,13 @@ def _ensure_model_loaded():
         if _model is not None or _load_error is not None:
             return
         try:
-            print("[lazy] Importing heavy libs (torch, etc)...", flush=True)
+            print("[lazy] Starting lazy loading sequence...", flush=True)
+            
+            # Sub-step imports to identify failure point
+            print("[lazy] 1/4 Importing torch...", flush=True)
             import torch
+            
+            print("[lazy] 2/4 Importing inference core...", flush=True)
             from inference import enhance_image, load_model
 
             _device     = torch.device("cpu")
@@ -42,26 +47,36 @@ def _ensure_model_loaded():
             ckpt_path = next((p for p in paths if os.path.exists(p)), None)
             
             if not ckpt_path:
-                raise FileNotFoundError(f"Checkpoints not found in {paths}")
+                raise FileNotFoundError(f"Checkpoints not found. Looked in: {paths}")
 
-            print(f"[lazy] Loading weights from {ckpt_path}...", flush=True)
+            print(f"[lazy] 3/4 Loading weights from {ckpt_path}...", flush=True)
             _model = load_model(ckpt_path, 32, 3, _device)
+            
             gc.collect()
-            print("[lazy] Model successfully loaded!", flush=True)
+            print("[lazy] 4/4 Model successfully loaded and ready!", flush=True)
 
         except BaseException as e:
             err = f"{type(e).__name__}: {str(e)}"
             print(f"[CRITICAL] Model load failure: {err}", flush=True)
             traceback.print_exc()
             _load_error = err
-            raise
+            # We don't raise here, we store it to return via API
+            return
 
 # ── Error Handlers ────────────────────────────────────────────────────────────
 @app.errorhandler(Exception)
 def handle_exception(e):
-    print(f"--- SERVER ERROR: {e} ---", flush=True)
+    # Standard exceptions (404, 500 etc)
+    print(f"--- APP EXCEPTION: {e} ---", flush=True)
     traceback.print_exc()
     return jsonify({"error": str(e)}), 500
+
+@app.errorhandler(BaseException)
+def handle_base_exception(e):
+    # Catches SystemExit, MemoryError, etc.
+    print(f"--- CRITICAL BASE EXCEPTION: {e} ---", flush=True)
+    traceback.print_exc()
+    return jsonify({"error": f"Critical Failure: {type(e).__name__}: {str(e)}"}), 500
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.route("/")
@@ -81,15 +96,27 @@ def health():
 def debug():
     print("--- SERVING DEBUG ---", flush=True)
     results = {}
-    test_libs = ["torch", "einops", "pywt", "cv2", "PIL", "skimage", "timm", "model", "inference"]
-    for lib in test_libs:
+    
+    # Test individual imports that might trigger SystemExit
+    tests = [
+        ("torch",     "import torch"),
+        ("einops",    "import einops"),
+        ("pywt",      "import pywt"),
+        ("cv2",       "import cv2"),
+        ("PIL",       "from PIL import Image"),
+        ("skimage",   "from skimage.restoration import denoise_tv_chambolle"),
+        ("timm",      "import timm"),
+        ("model",     "from model import DRSformer"),
+        ("inference", "from inference import load_model")
+    ]
+    
+    for name, cmd in tests:
         try:
-            if lib == "PIL": exec("from PIL import Image")
-            elif lib == "skimage": exec("from skimage.restoration import denoise_tv_chambolle")
-            else: exec(f"import {lib}")
-            results[lib] = "OK"
+            exec(cmd)
+            results[name] = "OK"
         except BaseException as e:
-            results[lib] = f"ERROR: {type(e).__name__}: {e}"
+            results[name] = f"ERROR: {type(e).__name__}: {str(e)}"
+            
     return jsonify(results)
 
 @app.route("/enhance", methods=["POST"])
@@ -97,11 +124,11 @@ def api_enhance():
     print("--- ENHANCE REQUEST RECEIVED ---", flush=True)
     try:
         _ensure_model_loaded()
-    except Exception as e:
-        return jsonify({"error": str(e)}), 503
+    except BaseException as e:
+        return jsonify({"error": f"Load crash: {type(e).__name__}: {str(e)}"}), 503
 
     if _load_error:
-        return jsonify({"error": _load_error}), 503
+        return jsonify({"error": f"Model failed to start: {_load_error}"}), 503
 
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
@@ -126,11 +153,11 @@ def api_enhance():
         img = Image.open(file.stream).convert("RGB")
         w, h = img.size
         
-        # Power-save mode for Render Free Tier (256px limit)
-        LIMIT = 256
+        # Ultra-safe mode for Render Free Tier (224px limit)
+        LIMIT = 224
         if max(w, h) > LIMIT:
             scale = LIMIT / max(w, h)
-            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            img = img.resize((int(w * scale), int(h * scale)), Image.BILINEAR)
         
         gc.collect()
         
@@ -159,11 +186,12 @@ def api_enhance():
             "height": enhanced.height
         })
 
-    except Exception as e:
-        print(f"--- ENHANCE ERROR: {e} ---", flush=True)
+    except BaseException as e:
+        print(f"--- ENHANCE CRASH: {type(e).__name__}: {e} ---", flush=True)
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Inference failed: {type(e).__name__}: {str(e)}"}), 500
 
 if __name__ == "__main__":
-    # Local only
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    # Local only - Render uses gunicorn
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

@@ -31,9 +31,9 @@ except ImportError:
     HAS_SKIMAGE = False
     print("Warning: scikit-image not found. Denoising will be disabled.")
 
-from model import DRSformer
-from model.alignment import apply_alignment
-
+# Deferred imports in functions
+# from model import DRSformer
+# from model.alignment import apply_alignment
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif"}
 
@@ -60,6 +60,7 @@ def load_model(checkpoint_path, base_ch=32, num_dmrb=3, device="cpu"):
             new_state[k] = v
 
     print(f"  [model] Loading DRSformer (dim={base_ch}) from {Path(checkpoint_path).name}")
+    from model import DRSformer
     model = DRSformer(dim=base_ch).to(device)
     
     try:
@@ -119,6 +120,7 @@ def enhance_image(model, pil_img,
 
     # Domain Alignment (Camera Sensor Independence)
     if auto_align:
+        from model.alignment import apply_alignment
         pil_img = apply_alignment(pil_img)
 
 
