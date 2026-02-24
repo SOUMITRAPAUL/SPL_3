@@ -44,7 +44,7 @@ def load_model(checkpoint_path, base_ch=32, num_dmrb=3, device="cpu"):
     Load DRSformer model. Handles both raw state_dicts and wrapped checkpoints.
     Support checkpoints from LOL-v1, LOL-v2, and DataParallel training.
     """
-    ckpt  = torch.load(checkpoint_path, map_location=device)
+    ckpt  = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state = ckpt.get("model", ckpt)          # supports both raw and wrapped
 
     # Key mapping (handles common prefixes like 'module.' or 'stage.')

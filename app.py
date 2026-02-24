@@ -70,8 +70,15 @@ def pil_to_b64(img, fmt="PNG"):
 @app.errorhandler(Exception)
 def handle_exception(e):
     """Always return JSON — never HTML error pages."""
+    import traceback
+    traceback.print_exc()          # shows in Render logs
     return jsonify({"error": str(e)}), 500
 
+@app.errorhandler(500)
+def handle_500(e):
+    import traceback
+    traceback.print_exc()
+    return jsonify({"error": str(e)}), 500
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.route("/")
