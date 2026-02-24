@@ -1,154 +1,133 @@
 import sys
 import os
-import base64
 import gc
 import io
-import threading
 import traceback
 from flask import Flask, render_template, request, jsonify
 
 # Immediate startup signal for logs
-print("--- FLASK BOOTSTRAP STARTING ---", flush=True)
+print("--- FLASK STARTING (STABLE VERSION) ---", flush=True)
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB limit
 
-# ── Globals ──────────────────────────────────────────────────────────────────
-_model      = None
-_device     = None
-_enhance_fn = None
-_model_lock = threading.Lock()
+# Shared model pointers
+_model = None
 _load_error = None
 
-# sys.exit interceptor
-def _intercept_exit(code=0):
-    stack = "".join(traceback.format_stack())
-    msg = f"\n--- [INTERCEPTOR] SYSTEM EXIT CALLED WITH CODE: {code} ---\n{stack}"
-    print(msg, flush=True)
-    raise RuntimeError(f"Intercepted sys.exit({code}). Stack:\n{stack}")
+def get_mem_usage():
+    """Returns VmRSS for Linux systems to track OOM risks."""
+    try:
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if "VmRSS" in line:
+                    return line.strip()
+    except: return "unknown (non-linux?)"
+    return "unknown"
 
 def _ensure_model_loaded():
-    """Deferred loading with breadcrumbs to find the 'SystemExit' trigger."""
-    global _model, _device, _enhance_fn, _load_error
-
-    if _model is not None or _load_error is not None:
-        return
-
-    with _model_lock:
-        if _model is not None or _load_error is not None:
-            return
+    global _model, _load_error
+    if _model is not None:
+        return True
+    
+    try:
+        print(f"--- LAZY LOADING MODEL ({get_mem_usage()}) ---", flush=True)
+        # Import inside to prevent startup timeout
+        import inference
         
-        old_exit = sys.exit
-        sys.exit = _intercept_exit
-        
-        try:
-            print("[lazy] STEP 1: Setting up torch", flush=True)
-            import torch
-            _device = torch.device("cpu")
-            
-            print("[lazy] STEP 2: Importing inference (may trigger sub-imports)", flush=True)
-            from inference import enhance_image, load_model
-            _enhance_fn = enhance_image
+        # Determine checkpoint
+        ckpt = "checkpoints/lolv2_test.pth" 
+        if not os.path.exists(ckpt):
+            ckpt = "checkpoints/best.pth"
 
-            print("[lazy] STEP 3: Checking for checkpoint files", flush=True)
-            paths = ["checkpoints/best1.pth", "checkpoints/best.pth", "best1.pth", "best.pth"]
-            ckpt_path = next((p for p in paths if os.path.exists(p)), None)
-            
-            if not ckpt_path:
-                raise FileNotFoundError(f"Missing weight files. Searched: {paths}")
+        print(f"--- USING CHECKPOINT: {ckpt} ---", flush=True)
+        _model = inference.load_model(ckpt, device="cpu")
+        print(f"--- MODEL READY ({get_mem_usage()}) ---", flush=True)
+        return True
+    except Exception as e:
+        _load_error = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+        print(f"--- MODEL LOAD FAILED: {_load_error} ---", flush=True)
+        return False
 
-            print(f"[lazy] STEP 4: Calling load_model({ckpt_path})", flush=True)
-            _model = load_model(ckpt_path, 32, 3, _device)
-            
-            print("[lazy] STEP 5: Model loaded successfully!", flush=True)
-            gc.collect()
-
-        except BaseException as e:
-            err = f"{type(e).__name__}: {str(e)}"
-            print(f"[CRITICAL] Loading failed: {err}", flush=True)
-            traceback.print_exc()
-            _load_error = err
-        finally:
-            sys.exit = old_exit
-
-# ── Error Handlers ────────────────────────────────────────────────────────────
-@app.errorhandler(Exception)
-def handle_exception(e):
-    return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
-
-# ── Routes ────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
-    print("--- SERVING INDEX ---", flush=True)
+    print(f"--- SERVING INDEX ({get_mem_usage()}) ---", flush=True)
     return render_template("index.html")
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "model_ready": _model is not None,
-        "load_error": _load_error
+        "model_loaded": _model is not None,
+        "mem": get_mem_usage(),
+        "pid": os.getpid()
     })
 
 @app.route("/debug")
 def debug():
-    print("--- SERVING DEBUG ---", flush=True)
-    results = {}
+    results = {
+        "cwd": os.getcwd(),
+        "python": sys.version,
+        "mem": get_mem_usage(),
+        "files": os.listdir('.')
+    }
     
-    old_exit = sys.exit
-    sys.exit = _intercept_exit
-    
-    tests = [
-        ("torch",      "import torch; results['torch'] = torch.__version__"),
-        ("inference",  "import inference"),
-        ("model",      "from model import DRSformer"),
-        ("cwd",        "import os; results['cwd'] = os.getcwd(); results['files'] = os.listdir('.')")
-    ]
-    
-    for name, cmd in tests:
-        try:
-            local_scope = {"results": results}
-            exec(cmd, {}, local_scope)
-            if name not in results: results[name] = "OK"
-        except BaseException as e:
-            results[name] = f"ERROR: {type(e).__name__}: {str(e)}"
-            
-    sys.exit = old_exit
+    # Check imports
+    try:
+        import torch
+        results["torch"] = torch.__version__
+    except Exception as e: results["torch"] = str(e)
+
+    try:
+        import inference
+        results["inference"] = "OK"
+    except Exception as e: results["inference"] = str(e)
+
     return jsonify(results)
 
 @app.route("/enhance", methods=["POST"])
 def api_enhance():
-    try:
-        _ensure_model_loaded()
-    except BaseException as e:
-        return jsonify({"error": f"Load crash: {str(e)}"}), 503
-
-    if _load_error:
-        return jsonify({"error": f"Startup Error: {_load_error}"}), 503
-
-    file = request.files.get("file")
-    if not file: return jsonify({"error": "No file uploaded"}), 400
+    if not _ensure_model_loaded():
+        return jsonify({"error": "Model failed to load", "details": _load_error}), 500
     
+    file = request.files.get("image")
+    if not file:
+        return jsonify({"error": "No image uploaded"}), 400
+
     try:
         from PIL import Image
+        import base64
+        import inference
+
         img = Image.open(file.stream).convert("RGB")
+        print(f"--- ENHANCING IMAGE: {img.size} ({get_mem_usage()}) ---", flush=True)
         
-        # Power-save limit for free tier
-        LIMIT = 224
-        if max(img.size) > LIMIT:
-            scale = LIMIT / max(img.size)
-            img = img.resize((int(img.width * scale), int(img.height * scale)), Image.BILINEAR)
+        # Max resolution safety for Free Tier
+        MAX_DIM = 224
+        if max(img.size) > MAX_DIM:
+            img.thumbnail((MAX_DIM, MAX_DIM))
+            print(f"--- RESIZED TO: {img.size} ---", flush=True)
+
+        strength = float(request.form.get("strength", 1.0))
+        enhanced = inference.enhance_image(_model, img, enhance_strength=strength, device="cpu")
         
-        gc.collect()
-        res = _enhance_fn(_model, img, 1.0, 1.5, 1.0, 1.3, 1.0, 2.0, 0.0, False, _device)
-        
+        # Convert to Base64
         buf = io.BytesIO()
-        res.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode()
+        enhanced.save(buf, format="PNG")
+        b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
         
-        return jsonify({"enhanced_b64": b64, "width": res.width, "height": res.height})
+        print(f"--- ENHANCE COMPLETE ({get_mem_usage()}) ---", flush=True)
+        gc.collect() # Aggressive cleanup
+        
+        return jsonify({
+            "image": f"data:image/png;base64,{b64_str}",
+            "mem_after": get_mem_usage()
+        })
     except Exception as e:
-        return jsonify({"error": f"Enhancement failed: {str(e)}"}), 500
+        print(f"--- ENHANCE ERROR: {str(e)} ---", flush=True)
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    # Local dev mode
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
