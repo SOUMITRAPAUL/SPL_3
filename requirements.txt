@@ -1,5 +1,6 @@
-torch
-torchvision
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu
 flask>=2.3.0
 gunicorn
 Pillow>=9.0.0

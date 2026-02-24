@@ -14,6 +14,7 @@ import argparse
 import base64
 import io
 import os
+import threading
 
 import torch
 from flask import Flask, render_template, request, jsonify
@@ -25,8 +26,9 @@ from inference import enhance_image, load_model, pad_to_multiple
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024   # 32 MB
 
-_model  = None
-_device = None
+_model      = None
+_device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+_model_lock = threading.Lock()
 
 
 def pil_to_b64(img, fmt="PNG"):
@@ -43,6 +45,7 @@ def index():
 
 @app.route("/enhance", methods=["POST"])
 def api_enhance():
+    _ensure_model_loaded()
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -109,51 +112,41 @@ def api_enhance():
 
 @app.route("/health")
 def health():
+    _ensure_model_loaded()
     return jsonify({"status": "ok", "model_loaded": _model is not None})
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--checkpoint", type=str, default="best1.pth")
-    p.add_argument("--base_ch",    type=int, default=32)
-    p.add_argument("--num_dmrb",   type=int, default=3)
-    p.add_argument("--host",       type=str, default="0.0.0.0")
-    p.add_argument("--port",       type=int, default=5000)
-    p.add_argument("--debug",      action="store_true")
-    return p.parse_args()
-
-
-# ── Global Model Initialization (For Vercel/Production) ───────────────────────
-_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-def init_model():
+# ── Lazy model loader (called on first request) ───────────────────────────────
+def _ensure_model_loaded():
+    """Load the model on the first request. Thread-safe."""
     global _model
-    # Standard checkpoint locations
-    paths = [
-        "checkpoints/best1.pth",
-        "checkpoints/best.pth",
-        "best1.pth",
-        "best.pth"
-    ]
-    ckpt_path = None
-    for p in paths:
-        if os.path.exists(p):
-            ckpt_path = p
-            break
-    
-    if ckpt_path:
-        print(f"Initializing model with: {ckpt_path}")
-        _model = load_model(ckpt_path, 32, 3, _device)
-        print("Model state: READY")
-    else:
-        print("[CRITICAL] No model checkpoint found. Enhancement will fail.")
-
-# Load immediately on startup
-init_model()
+    if _model is not None:
+        return
+    with _model_lock:
+        if _model is not None:   # double-checked locking
+            return
+        paths = [
+            "checkpoints/best1.pth",
+            "checkpoints/best.pth",
+            "best1.pth",
+            "best.pth",
+        ]
+        ckpt_path = next((p for p in paths if os.path.exists(p)), None)
+        if ckpt_path:
+            print(f"[lazy] Loading model from {ckpt_path} ...")
+            _model = load_model(ckpt_path, 32, 3, _device)
+            print("[lazy] Model READY")
+        else:
+            print("[CRITICAL] No checkpoint found. Enhancement will fail.")
 
 
+# ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Local dev run
-    args = parse_args()
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--host",  type=str, default="0.0.0.0")
+    p.add_argument("--port",  type=int, default=5000)
+    p.add_argument("--debug", action="store_true")
+    args = p.parse_args()
+    _ensure_model_loaded()   # load eagerly for local dev
     app.run(host=args.host, port=args.port, debug=args.debug)
