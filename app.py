@@ -37,6 +37,12 @@ def pil_to_b64(img, fmt="PNG"):
     return base64.b64encode(buf.getvalue()).decode()
 
 
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Always return JSON errors — never HTML."""
+    return jsonify({"error": str(e)}), 500
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
@@ -45,7 +51,11 @@ def index():
 
 @app.route("/enhance", methods=["POST"])
 def api_enhance():
-    _ensure_model_loaded()
+    try:
+        _ensure_model_loaded()
+    except Exception as e:
+        return jsonify({"error": f"Model load failed: {str(e)}"}), 503
+
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
