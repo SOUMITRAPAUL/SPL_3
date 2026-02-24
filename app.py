@@ -1,27 +1,35 @@
-print("--- APP STARTUP ---")
-"""
-Flask web application — Low-Light Image Enhancement Tool.
-Heavy imports (torch, model, etc.) are deferred until the first /enhance
-request so gunicorn can bind the port without OOM-crashing immediately.
-"""
-
+import sys
+import logging
 import base64
 import gc
 import io
 import os
 import threading
 
-from flask import Flask, render_template, request, jsonify
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.info("--- BOOTSTRAP STARTING ---")
 
-app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024   # 16 MB
+try:
+    from flask import Flask, render_template, request, jsonify
 
-# ── Lazy-loaded globals ────────────────────────────────────────────────────────
-_model      = None
-_device     = None
-_enhance_fn = None
-_model_lock = threading.Lock()
-_load_error = None
+    app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024   # 16 MB
+
+    # ── Lazy-loaded globals ────────────────────────────────────────────────────────
+    _model      = None
+    _device     = None
+    _enhance_fn = None
+    _model_lock = threading.Lock()
+    _load_error = None
+
+    logger.info("--- FLASK APP CREATED ---")
+
+except Exception as e:
+    logger.error(f"--- FATAL BOOTSTRAP ERROR: {e} ---")
+    import traceback
+    traceback.print_exc()
+    raise
 
 
 def _ensure_model_loaded():
@@ -35,7 +43,9 @@ def _ensure_model_loaded():
         if _model is not None or _load_error is not None:
             return
         try:
+            app.logger.info("[lazy] Importing torch...")
             import torch
+            app.logger.info("[lazy] Importing inference...")
             from inference import enhance_image, load_model
 
             _device     = torch.device("cpu")   # always CPU on free tier
@@ -51,10 +61,10 @@ def _ensure_model_loaded():
             if ckpt is None:
                 raise FileNotFoundError("No checkpoint found: " + str(paths))
 
-            print(f"[lazy] Loading model from {ckpt} ...")
+            app.logger.info(f"[lazy] Loading model from {ckpt} ...")
             _model = load_model(ckpt, 32, 3, _device)
             gc.collect()   # free any temp objects from loading
-            print("[lazy] Model READY")
+            app.logger.info("[lazy] Model READY")
 
         except BaseException as exc:   # catches MemoryError too
             err_msg = f"{type(exc).__name__}: {exc}"
