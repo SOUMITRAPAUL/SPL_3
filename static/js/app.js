@@ -211,8 +211,15 @@ async function processFile(file) {
 
   try {
     const res = await fetch('/enhance', { method: 'POST', body: form });
-    const data = await res.json();
 
+    // Guard: server may return HTML (502/503 proxy error) instead of JSON
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Server error ${res.status} — ${text.replace(/<[^>]+>/g, '').trim().slice(0, 200)}`);
+    }
+
+    const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || 'Server error');
 
     enhImgEl.src = 'data:image/png;base64,' + data.enhanced_b64;
