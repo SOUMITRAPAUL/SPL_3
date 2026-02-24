@@ -37,8 +37,10 @@ def _ensure_model_loaded():
         
         # Determine checkpoint
         ckpt = "checkpoints/lolv2_test.pth" 
-        if not os.path.exists(ckpt):
-            ckpt = "checkpoints/best.pth"
+        for candidate in ["checkpoints/lolv2_test.pth", "checkpoints/best1.pth", "checkpoints/best.pth"]:
+            if os.path.exists(candidate):
+                ckpt = candidate
+                break
 
         print(f"--- USING CHECKPOINT: {ckpt} ---", flush=True)
         _model = inference.load_model(ckpt, device="cpu")
@@ -59,6 +61,7 @@ def health():
     return jsonify({
         "status": "ok",
         "model_loaded": _model is not None,
+        "model_error": _load_error is not None,
         "mem": get_mem_usage(),
         "pid": os.getpid()
     })
@@ -69,7 +72,9 @@ def debug():
         "cwd": os.getcwd(),
         "python": sys.version,
         "mem": get_mem_usage(),
-        "files": os.listdir('.')
+        "files": os.listdir('.'),
+        "checkpoints": os.listdir('checkpoints') if os.path.exists('checkpoints') else "MISSING",
+        "load_error": _load_error
     }
     
     # Check imports
