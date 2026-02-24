@@ -23,14 +23,61 @@ const sliders = {
 
 let processingQueue = [];
 let isProcessing = false;
+let lastFile = null;   // last file that was successfully enhanced
+let debounceTimer = null;
+const DEBOUNCE_MS = 700;    // ms to wait after slider stops before re-enhancing
+
+// ── Live CSS preview (instant, zero-latency) ──────────────────────────────────
+function applyLivePreview() {
+  const brightness = parseFloat(sliders.brightness.el.value);
+  const contrast = parseFloat(sliders.contrast.el.value);
+  const saturation = parseFloat(sliders.saturation.el.value);
+  // Approximate gamma with brightness offset (not pixel-accurate, but good enough for preview)
+  const gamma = parseFloat(sliders.gamma.el.value);
+  const gammaBrightness = gamma > 1 ? 1 + (gamma - 1) * 0.25 : gamma;
+
+  const cssFilter = `brightness(${brightness * gammaBrightness}) contrast(${contrast}) saturate(${saturation})`;
+
+  document.querySelectorAll('.enhanced-img').forEach(img => {
+    if (img.getAttribute('data-enhanced') === 'true') {
+      img.style.filter = cssFilter;
+    }
+  });
+}
+
+// Strip the live CSS filter once accurate server result is applied
+function clearLiveFilter() {
+  document.querySelectorAll('.enhanced-img').forEach(img => {
+    img.style.filter = '';
+  });
+}
+
+// ── Debounced server re-enhance ───────────────────────────────────────────────
+function scheduleReEnhance() {
+  clearTimeout(debounceTimer);
+  if (!lastFile) return;   // no image enhanced yet – nothing to do
+
+  debounceTimer = setTimeout(async () => {
+    clearLiveFilter();
+    await processFile(lastFile);
+  }, DEBOUNCE_MS);
+}
 
 // ── Slider live-update ────────────────────────────────────────────────────────
 Object.values(sliders).forEach(s => {
   s.el.addEventListener('input', () => {
     s.badge.textContent = parseFloat(s.el.value).toFixed(2);
+    applyLivePreview();       // instant CSS feedback
+    scheduleReEnhance();      // accurate server result after pause
   });
 });
 
+// Auto-align toggle also triggers re-enhance
+alignCheck.addEventListener('change', () => {
+  scheduleReEnhance();
+});
+
+// ── Reset ─────────────────────────────────────────────────────────────────────
 resetBtn.addEventListener('click', () => {
   sliders.enhance.el.value = '1'; sliders.enhance.badge.textContent = '1.00';
   sliders.brightness.el.value = '1.50'; sliders.brightness.badge.textContent = '1.50';
@@ -40,6 +87,8 @@ resetBtn.addEventListener('click', () => {
   sliders.saturation.el.value = '1.00'; sliders.saturation.badge.textContent = '1.00';
   sliders.denoise.el.value = '0.00'; sliders.denoise.badge.textContent = '0.00';
   alignCheck.checked = false;
+  clearLiveFilter();
+  scheduleReEnhance();   // re-enhance with reset defaults
 });
 
 // ── File selection ────────────────────────────────────────────────────────────
@@ -113,15 +162,15 @@ fileInput.addEventListener('change', () => {
   addFiles(fileInput.files);
   fileInput.value = '';
 });
+
 enhBtn.addEventListener('click', async () => {
   if (isProcessing || processingQueue.length === 0) return;
 
   isProcessing = true;
   enhBtn.disabled = true;
   spinner.classList.remove('hidden');
-  btnTxt.textContent = 'Enhancing Batch...';
+  btnTxt.textContent = 'Enhancing...';
 
-  // Process files one by one (to keep server stable and responsive)
   while (processingQueue.length > 0) {
     const file = processingQueue.shift();
     await processFile(file);
@@ -135,15 +184,19 @@ enhBtn.addEventListener('click', async () => {
   fileNameEl.textContent = 'Batch Complete';
 });
 
+// ── Core enhancement function ─────────────────────────────────────────────────
 async function processFile(file) {
   const card = document.getElementById(file.cardId);
+  if (!card) return;
+
   const statusEl = card.querySelector('.status');
   const infoEl = card.querySelector('.info');
   const enhImgEl = card.querySelector('.enhanced-img');
   const dlBtn = card.querySelector('.dl-btn');
 
-  statusEl.textContent = 'Processing...';
+  statusEl.textContent = 'Processing…';
   statusEl.className = 'status status-processing';
+  infoEl.textContent = 'Sending to model…';
 
   const form = new FormData();
   form.append('file', file);
@@ -163,12 +216,16 @@ async function processFile(file) {
     if (!res.ok || data.error) throw new Error(data.error || 'Server error');
 
     enhImgEl.src = 'data:image/png;base64,' + data.enhanced_b64;
+    enhImgEl.setAttribute('data-enhanced', 'true');
+    enhImgEl.style.filter = '';   // clear any live CSS preview
     dlBtn.href = enhImgEl.src;
     dlBtn.classList.remove('hidden');
 
-    statusEl.textContent = 'Done';
+    statusEl.textContent = 'Done ✓';
     statusEl.className = 'status status-done';
     infoEl.textContent = `${data.width} × ${data.height} px`;
+
+    lastFile = file;   // store for slider-triggered re-enhance
 
   } catch (err) {
     statusEl.textContent = 'Error';
