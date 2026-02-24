@@ -44,10 +44,10 @@ def load_model(checkpoint_path, base_ch=32, num_dmrb=3, device="cpu"):
     Load DRSformer model. Handles both raw state_dicts and wrapped checkpoints.
     Support checkpoints from LOL-v1, LOL-v2, and DataParallel training.
     """
+    print(f"  [load_model] STEP 4.1: torch.load from {checkpoint_path}", flush=True)
     ckpt  = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state = ckpt.get("model", ckpt)          # supports both raw and wrapped
+    state = ckpt.get("model", ckpt)
 
-    # Key mapping (handles common prefixes like 'module.' or 'stage.')
     new_state = {}
     for k, v in state.items():
         if k.startswith("module."):
@@ -59,18 +59,19 @@ def load_model(checkpoint_path, base_ch=32, num_dmrb=3, device="cpu"):
         else:
             new_state[k] = v
 
-    print(f"  [model] Loading DRSformer (dim={base_ch}) from {Path(checkpoint_path).name}")
+    print(f"  [load_model] STEP 4.2: Instantiating DRSformer", flush=True)
     from model import DRSformer
     model = DRSformer(dim=base_ch).to(device)
     
+    print(f"  [load_model] STEP 4.3: Loading state dict", flush=True)
     try:
         model.load_state_dict(new_state)
     except RuntimeError as e:
-        print(f"  [Warning] Strict load failed: {e}")
-        print("  Attempting non-strict load...")
+        print(f"  [Warning] Strict load failed: {e}", flush=True)
         model.load_state_dict(new_state, strict=False)
 
     model.eval()
+    print(f"  [load_model] STEP 4.4: Model ready", flush=True)
     return model
 
 

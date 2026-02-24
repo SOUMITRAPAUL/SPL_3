@@ -22,9 +22,10 @@ _load_error = None
 
 # sys.exit interceptor
 def _intercept_exit(code=0):
-    print(f"\n--- [INTERCEPTOR] SYSTEM EXIT CALLED WITH CODE: {code} ---", flush=True)
-    traceback.print_stack()
-    raise RuntimeError(f"Intercepted sys.exit({code})")
+    stack = "".join(traceback.format_stack())
+    msg = f"\n--- [INTERCEPTOR] SYSTEM EXIT CALLED WITH CODE: {code} ---\n{stack}"
+    print(msg, flush=True)
+    raise RuntimeError(f"Intercepted sys.exit({code}). Stack:\n{stack}")
 
 def _ensure_model_loaded():
     """Deferred loading with breadcrumbs to find the 'SystemExit' trigger."""
@@ -41,32 +42,30 @@ def _ensure_model_loaded():
         sys.exit = _intercept_exit
         
         try:
-            print("[lazy] STEP 1: Importing Torch", flush=True)
+            print("[lazy] STEP 1: Setting up torch", flush=True)
             import torch
             _device = torch.device("cpu")
             
-            print("[lazy] STEP 2: Importing Inference Utils", flush=True)
+            print("[lazy] STEP 2: Importing inference (may trigger sub-imports)", flush=True)
             from inference import enhance_image, load_model
             _enhance_fn = enhance_image
 
-            print("[lazy] STEP 3: Identifying Checkpoint", flush=True)
+            print("[lazy] STEP 3: Checking for checkpoint files", flush=True)
             paths = ["checkpoints/best1.pth", "checkpoints/best.pth", "best1.pth", "best.pth"]
             ckpt_path = next((p for p in paths if os.path.exists(p)), None)
             
             if not ckpt_path:
-                print("[lazy] ERROR: No checkpoint file found in workspace", flush=True)
-                raise FileNotFoundError(f"Checkpoints missing! Checked {paths}")
+                raise FileNotFoundError(f"Missing weight files. Searched: {paths}")
 
             print(f"[lazy] STEP 4: Calling load_model({ckpt_path})", flush=True)
-            # This is the most likely place for SystemExit if sub-libraries fail
             _model = load_model(ckpt_path, 32, 3, _device)
             
-            print("[lazy] STEP 5: Success!", flush=True)
+            print("[lazy] STEP 5: Model loaded successfully!", flush=True)
             gc.collect()
 
         except BaseException as e:
             err = f"{type(e).__name__}: {str(e)}"
-            print(f"[CRITICAL] lazy loading failed at {type(e).__name__}: {str(e)}", flush=True)
+            print(f"[CRITICAL] Loading failed: {err}", flush=True)
             traceback.print_exc()
             _load_error = err
         finally:
@@ -75,9 +74,7 @@ def _ensure_model_loaded():
 # ── Error Handlers ────────────────────────────────────────────────────────────
 @app.errorhandler(Exception)
 def handle_exception(e):
-    print(f"--- APP EXCEPTION: {e} ---", flush=True)
-    traceback.print_exc()
-    return jsonify({"error": str(e)}), 500
+    return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.route("/")
@@ -101,12 +98,11 @@ def debug():
     old_exit = sys.exit
     sys.exit = _intercept_exit
     
-    # Check basic imports
     tests = [
-        ("torch",      "import torch"),
+        ("torch",      "import torch; results['torch'] = torch.__version__"),
         ("inference",  "import inference"),
         ("model",      "from model import DRSformer"),
-        ("checkpoint", "import os; results['checkpoint_exists'] = any(os.path.exists(p) for p in ['checkpoints/best1.pth', 'best1.pth', 'best.pth'])")
+        ("cwd",        "import os; results['cwd'] = os.getcwd(); results['files'] = os.listdir('.')")
     ]
     
     for name, cmd in tests:
@@ -125,19 +121,19 @@ def api_enhance():
     try:
         _ensure_model_loaded()
     except BaseException as e:
-        return jsonify({"error": f"Load crash: {type(e).__name__}: {str(e)}"}), 503
+        return jsonify({"error": f"Load crash: {str(e)}"}), 503
 
     if _load_error:
-        return jsonify({"error": f"Model failed to start: {_load_error}"}), 503
+        return jsonify({"error": f"Startup Error: {_load_error}"}), 503
 
     file = request.files.get("file")
-    if not file: return jsonify({"error": "No file"}), 400
+    if not file: return jsonify({"error": "No file uploaded"}), 400
     
     try:
         from PIL import Image
         img = Image.open(file.stream).convert("RGB")
         
-        # Scaling to fit RAM
+        # Power-save limit for free tier
         LIMIT = 224
         if max(img.size) > LIMIT:
             scale = LIMIT / max(img.size)
@@ -152,8 +148,7 @@ def api_enhance():
         
         return jsonify({"enhanced_b64": b64, "width": res.width, "height": res.height})
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": f"Processing error: {str(e)}"}), 500
+        return jsonify({"error": f"Enhancement failed: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
