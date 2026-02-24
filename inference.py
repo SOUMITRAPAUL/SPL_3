@@ -17,23 +17,9 @@ Post-processing sliders (applied AFTER model):
 import argparse
 import os
 from pathlib import Path
-import numpy as np
 
-import torch
-import torch.nn.functional as F
-import torchvision.transforms.functional as TF
-from PIL import Image, ImageEnhance
-
-try:
-    from skimage.restoration import denoise_tv_chambolle
-    HAS_SKIMAGE = True
-except ImportError:
-    HAS_SKIMAGE = False
-    print("Warning: scikit-image not found. Denoising will be disabled.")
-
-# Deferred imports in functions
-# from model import DRSformer
-# from model.alignment import apply_alignment
+# Heavy imports are deferred inside load_model and enhance_image
+# to prevent Gunicorn timeout during the initial module load.
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif"}
 
@@ -44,6 +30,7 @@ def load_model(checkpoint_path, base_ch=32, num_dmrb=3, device="cpu"):
     Load DRSformer model. Handles both raw state_dicts and wrapped checkpoints.
     Support checkpoints from LOL-v1, LOL-v2, and DataParallel training.
     """
+    import torch
     print(f"  [load_model] STEP 4.1: torch.load from {checkpoint_path}", flush=True)
     ckpt  = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state = ckpt.get("model", ckpt)
@@ -77,6 +64,7 @@ def load_model(checkpoint_path, base_ch=32, num_dmrb=3, device="cpu"):
 
 def pad_to_multiple(tensor, multiple=16):
     """Pad H and W so they are divisible by `multiple` (required by deep architectures)."""
+    import torch.nn.functional as F
     _, _, h, w = tensor.shape
     ph = (multiple - h % multiple) % multiple
     pw = (multiple - w % multiple) % multiple
@@ -85,7 +73,6 @@ def pad_to_multiple(tensor, multiple=16):
     return tensor, h, w
 
 
-@torch.no_grad()
 def enhance_image(model, pil_img,
                   enhance_strength: float = 1.0,
                   brightness: float = 1.0,
@@ -96,6 +83,17 @@ def enhance_image(model, pil_img,
                   denoise_weight: float = 0.00,
                   auto_align: bool = False,
                   device="cpu"):
+    import torch
+    import numpy as np
+    import torchvision.transforms.functional as TF
+    from PIL import Image, ImageEnhance
+
+    try:
+        from skimage.restoration import denoise_tv_chambolle
+        HAS_SKIMAGE = True
+    except ImportError:
+        HAS_SKIMAGE = False
+
     """
     Args:
         pil_img          : RGB PIL Image
@@ -124,20 +122,20 @@ def enhance_image(model, pil_img,
         from model.alignment import apply_alignment
         pil_img = apply_alignment(pil_img)
 
+    with torch.no_grad():
+        inp = TF.to_tensor(pil_img).unsqueeze(0).to(device)   # [1,3,H,W]
 
-    inp = TF.to_tensor(pil_img).unsqueeze(0).to(device)   # [1,3,H,W]
+        inp_pad, orig_h, orig_w = pad_to_multiple(inp, multiple=16)
 
-    inp_pad, orig_h, orig_w = pad_to_multiple(inp, multiple=16)
+        out_pad = model(inp_pad)
+        out     = out_pad[:, :, :orig_h, :orig_w]             # crop padding
 
-    out_pad = model(inp_pad)
-    out     = out_pad[:, :, :orig_h, :orig_w]             # crop padding
+        # Blend with original (enhance strength slider)
+        if enhance_strength < 1.0:
+            orig_crop = inp[:, :, :orig_h, :orig_w]
+            out = orig_crop * (1.0 - enhance_strength) + out * enhance_strength
 
-    # Blend with original (enhance strength slider)
-    if enhance_strength < 1.0:
-        orig_crop = inp[:, :, :orig_h, :orig_w]
-        out = orig_crop * (1.0 - enhance_strength) + out * enhance_strength
-
-    result = TF.to_pil_image(out.squeeze(0).clamp(0, 1).cpu())
+        result = TF.to_pil_image(out.squeeze(0).clamp(0, 1).cpu())
 
     # Post-processing (user preference adjustments)
     if brightness != 1.0:
@@ -183,6 +181,8 @@ def parse_args():
 
 
 def main():
+    import torch
+    from PIL import Image
     args   = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model  = load_model(args.checkpoint, args.base_ch, args.num_dmrb, device)
