@@ -56,9 +56,10 @@ def _ensure_model_loaded():
             print("[lazy] Model READY")
 
         except BaseException as exc:   # catches MemoryError too
-            _load_error = str(exc)
-            print(f"[CRITICAL] Model load failed: {exc}")
-            raise RuntimeError(str(exc)) from None   # convert to Exception
+            err_msg = f"{type(exc).__name__}: {exc}"
+            _load_error = err_msg
+            print(f"[CRITICAL] Model load failed: {err_msg}")
+            raise RuntimeError(err_msg) from None   # convert to Exception
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

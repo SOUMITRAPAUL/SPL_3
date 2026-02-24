@@ -4,7 +4,10 @@ import math
 import torch
 from torch.nn import functional as F
 from torch.nn import init as init
-from timm.models.layers import trunc_normal_
+try:
+    from timm.layers import trunc_normal_          # timm >= 0.9 / 1.x
+except ImportError:
+    from timm.models.layers import trunc_normal_  # timm < 0.9
 from einops import rearrange
 import numbers
 # from .transformer import TransformerEncoder
