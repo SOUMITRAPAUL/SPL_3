@@ -54,6 +54,10 @@ def api_enhance():
 
     try:
         img = Image.open(file.stream).convert("RGB")
+        
+        # Enforce 600x400 as requested by the user
+        print(f"--- Resizing image from {img.size} to (600, 400) ---", flush=True)
+        img = img.resize((600, 400), Image.LANCZOS)
         w, h = img.size
         
         # Extract sliders matching app.js
