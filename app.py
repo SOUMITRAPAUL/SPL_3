@@ -170,6 +170,32 @@ def health():
     })
 
 
+@app.route("/debug")
+def debug():
+    """Test each import individually to find which one fails."""
+    results = {}
+    libs = [
+        ("torch",          "import torch; results['torch'] = torch.__version__"),
+        ("einops",         "import einops"),
+        ("pywt",           "import pywt"),
+        ("cv2",            "import cv2"),
+        ("PIL",            "from PIL import Image"),
+        ("skimage",        "from skimage.restoration import denoise_tv_chambolle"),
+        ("timm",           "import timm; results['timm'] = timm.__version__"),
+        ("timm.layers",    "from timm.layers import trunc_normal_"),
+        ("model",          "from model import DRSformer"),
+        ("inference",      "from inference import load_model"),
+    ]
+    for name, code in libs:
+        try:
+            exec(code, {"results": results})
+            results[name] = results.get(name, "OK")
+        except BaseException as e:
+            results[name] = f"FAILED: {type(e).__name__}: {e}"
+    return jsonify(results)
+
+
+
 # ── Local dev entry point ────────────────────────────────────────────────────
 if __name__ == "__main__":
     import argparse
