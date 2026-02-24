@@ -1,3 +1,4 @@
+print("--- APP STARTUP ---")
 """
 Flask web application — Low-Light Image Enhancement Tool.
 Heavy imports (torch, model, etc.) are deferred until the first /enhance
