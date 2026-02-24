@@ -71,12 +71,6 @@ def handle_exception(e):
     traceback.print_exc()
     return jsonify({"error": str(e)}), 500
 
-@app.errorhandler(BaseException)
-def handle_base_exception(e):
-    # Catches SystemExit, MemoryError, etc.
-    print(f"--- CRITICAL BASE EXCEPTION: {e} ---", flush=True)
-    traceback.print_exc()
-    return jsonify({"error": f"Critical Failure: {type(e).__name__}: {str(e)}"}), 500
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.route("/")
