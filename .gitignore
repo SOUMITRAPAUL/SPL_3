@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Distribution / Build
+dist/
+build/
+*.egg-info/
+
+# Vercel
+.vercel/
+
+# IDEs
+.vscode/
+.idea/
+
+# Large Data (Optional - Keep weights if needed for Vercel)
+# data/
+# test_data/
+# outputs/
