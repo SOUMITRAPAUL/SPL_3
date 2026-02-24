@@ -123,7 +123,7 @@ def api_enhance():
         pil_img = Image.open(f.stream).convert("RGB")
         w, h    = pil_img.size
 
-        MAX_DIM = 600
+        MAX_DIM = 320
         if max(w, h) > MAX_DIM:
             scale = MAX_DIM / max(w, h)
             pil_img = pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
