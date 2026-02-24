@@ -1,7 +1,7 @@
---find-links https://download.pytorch.org/whl/cpu/torch_stable.html
 torch
 torchvision
 flask>=2.3.0
+gunicorn
 Pillow>=9.0.0
 scikit-image>=0.19.0
 numpy>=1.21.0
