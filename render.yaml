@@ -3,9 +3,9 @@ services:
     name: low-light-enhancer
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 300 --workers 1
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 600 --workers 1 --log-level debug
     envVars:
       - key: PYTHON_VERSION
-        value: 3.10.0
+        value: 3.10.13
       - key: FLASK_ENV
         value: production
