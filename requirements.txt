@@ -1,10 +1,10 @@
-torch
-torchvision
-flask>=2.3.0
-Pillow>=9.0.0
-scikit-image>=0.19.0
-numpy>=1.21.0
-pyyaml>=6.0
-einops>=0.6.0
-PyWavelets
-opencv-python-headless
+torch 	# MalPack: DANGER
+torchvision 	# MalPack: SAFE
+flask>=2.3.0 	# MalPack: DANGER
+Pillow>=9.0.0 	# MalPack: DANGER
+scikit-image>=0.19.0 	# MalPack: DANGER
+numpy>=1.21.0 	# MalPack: DANGER
+pyyaml>=6.0 	# MalPack: SAFE
+einops>=0.6.0 	# MalPack: SAFE
+PyWavelets 	# MalPack: DANGER
+opencv-python-headless 	# MalPack: DANGER
