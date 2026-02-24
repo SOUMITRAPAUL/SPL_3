@@ -1,15 +1,17 @@
-import sys
 import os
-import gc
 import io
+import gc
+import base64
 import traceback
 from flask import Flask, render_template, request, jsonify
+from PIL import Image
 
-# Immediate startup signal for logs
-print("--- STARTING PRODUCTION APP ---", flush=True)
+# For local development, we can import things more directly if we want,
+# but keeping the lazy loading is still good for app responsiveness!
+import inference
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024 # 32MB local limit
 
 _model = None
 _load_error = None
@@ -20,41 +22,28 @@ def _ensure_model_loaded():
         return True
     
     try:
-        import inference
-        ckpt = "checkpoints/best1.pth"
-        if not os.path.exists(ckpt):
-            ckpt = "checkpoints/lolv2_test.pth"
+        # Check for multiple possible checkpoint names
+        ckpt = None
+        for candidate in ["checkpoints/best1.pth", "checkpoints/best.pth", "checkpoints/lolv2_test.pth"]:
+            if os.path.exists(candidate):
+                ckpt = candidate
+                break
         
-        print(f"--- LOADING MODEL: {ckpt} ---", flush=True)
+        if not ckpt:
+            raise FileNotFoundError("Could not find any .pth checkpoint in checkpoints/ folder.")
+
+        print(f"--- Loading Model: {ckpt} ---")
         _model = inference.load_model(ckpt, device="cpu")
-        print("--- MODEL READY ---", flush=True)
+        print("--- Model Loaded Successfully ---")
         return True
     except Exception as e:
         _load_error = f"{type(e).__name__}: {str(e)}"
-        print(f"--- LOAD FAILED: {_load_error} ---", flush=True)
+        print(f"--- FAILED TO LOAD MODEL: {_load_error} ---")
         return False
 
 @app.route("/")
 def index():
     return render_template("index.html")
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok", "ready": _model is not None})
-
-@app.route("/debug")
-def debug():
-    try:
-        import torch
-        torch_v = torch.__version__
-    except: torch_v = "error"
-    
-    return jsonify({
-        "python": sys.version,
-        "torch": torch_v,
-        "model_error": _load_error,
-        "checkpoints": os.listdir('checkpoints') if os.path.exists('checkpoints') else "none"
-    })
 
 @app.route("/enhance", methods=["POST"])
 def api_enhance():
@@ -62,22 +51,19 @@ def api_enhance():
         return jsonify({"error": "Model load failed", "details": _load_error}), 500
     
     file = request.files.get("image")
-    if not file: return jsonify({"error": "No image"}), 400
+    if not file:
+        return jsonify({"error": "No image uploaded"}), 400
 
     try:
-        from PIL import Image
-        import base64
-        import inference
-
         img = Image.open(file.stream).convert("RGB")
-        
-        # Free Tier Safety
-        if max(img.size) > 224:
-            img.thumbnail((224, 224))
-
         strength = float(request.form.get("strength", 1.0))
+        
+        print(f"--- Enhancing image ({img.size}) ---")
+        
+        # We removed the 224px limit for local machines!
         enhanced = inference.enhance_image(_model, img, enhance_strength=strength, device="cpu")
         
+        # Save to buffer
         buf = io.BytesIO()
         enhanced.save(buf, format="PNG")
         b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -85,7 +71,11 @@ def api_enhance():
         gc.collect()
         return jsonify({"image": f"data:image/png;base64,{b64_str}"})
     except Exception as e:
+        print(f"--- ERROR: {str(e)} ---")
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    # Start the app locally
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=True)
