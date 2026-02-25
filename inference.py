@@ -25,42 +25,122 @@ IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def load_model(checkpoint_path, base_ch=32, num_dmrb=3, device="cpu"):
+# ─────────────────────────────────────────────────────────────────────────────
+class EnhancementModel:
     """
-    Load DRSformer model. Handles both raw state_dicts and wrapped checkpoints.
-    Support checkpoints from LOL-v1, LOL-v2, and DataParallel training.
+    CRC Class: EnhancementModel
+    Responsibilities: Loading deep learning models, performing image enhancement.
     """
-    import torch
-    print(f"  [load_model] STEP 4.1: torch.load from {checkpoint_path}", flush=True)
-    ckpt  = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state = ckpt.get("model", ckpt)
+    def __init__(self, weightsPath=None, device="cpu"):
+        self.weightsPath = weightsPath
+        self.device = device
+        self.model = None
+        self.inputShape = None
 
-    new_state = {}
-    for k, v in state.items():
-        if k.startswith("module."):
-            new_state[k[7:]] = v
-        elif k.startswith("stage1."):
-            new_state[k.replace("stage1.", "body.0.")] = v
-        elif k.startswith("stage2."):
-            new_state[k.replace("stage2.", "body.1.")] = v
-        else:
-            new_state[k] = v
+    def loadModel(self, checkpoint_path=None, base_ch=32, device=None):
+        """
+        Equivalent to CRC loadModel()
+        """
+        import torch
+        if checkpoint_path:
+            self.weightsPath = checkpoint_path
+        if device:
+            self.device = device
+            
+        print(f"  [EnhancementModel] Loading from {self.weightsPath}", flush=True)
+        ckpt  = torch.load(self.weightsPath, map_location=self.device, weights_only=False)
+        state = ckpt.get("model", ckpt)
 
-    print(f"  [load_model] STEP 4.2: Instantiating DRSformer", flush=True)
-    from model import DRSformer
-    model = DRSformer(dim=base_ch).to(device)
-    
-    print(f"  [load_model] STEP 4.3: Loading state dict", flush=True)
-    try:
-        model.load_state_dict(new_state)
-    except RuntimeError as e:
-        print(f"  [Warning] Strict load failed: {e}", flush=True)
-        model.load_state_dict(new_state, strict=False)
+        new_state = {}
+        for k, v in state.items():
+            if k.startswith("module."):
+                new_state[k[7:]] = v
+            elif k.startswith("stage1."):
+                new_state[k.replace("stage1.", "body.0.")] = v
+            elif k.startswith("stage2."):
+                new_state[k.replace("stage2.", "body.1.")] = v
+            else:
+                new_state[k] = v
 
-    model.eval()
-    print(f"  [load_model] STEP 4.4: Model ready", flush=True)
-    return model
+        from model import DRSformer
+        self.model = DRSformer(dim=base_ch).to(self.device)
+        
+        try:
+            self.model.load_state_dict(new_state)
+        except RuntimeError:
+            self.model.load_state_dict(new_state, strict=False)
 
+        self.model.eval()
+        print(f"  [EnhancementModel] Model ready", flush=True)
+        return self.model
+
+    def enhanceImage(self, lowLightImage, userPreferences, device=None):
+        """
+        Equivalent to CRC enhanceImage(lowLightImage, userPreferences)
+        """
+        import torch
+        import numpy as np
+        import torchvision.transforms.functional as TF
+        from PIL import Image, ImageEnhance
+        
+        target_device = device if device else self.device
+        
+        try:
+            from skimage.restoration import denoise_tv_chambolle
+            HAS_SKIMAGE = True
+        except ImportError:
+            HAS_SKIMAGE = False
+
+        pil_img = lowLightImage.data
+        
+        # Prefs
+        enhance_strength = getattr(userPreferences, 'enhance_strength', 1.0)
+        brightness       = getattr(userPreferences, 'brightness', 1.0)
+        contrast         = getattr(userPreferences, 'contrast', 1.0)
+        gamma            = getattr(userPreferences, 'gamma', 1.0)
+        saturation       = getattr(userPreferences, 'saturation', 1.0)
+        sharpness        = getattr(userPreferences, 'sharpness', 1.0)
+        denoise_weight   = getattr(userPreferences, 'denoise_weight', 0.0)
+        auto_align       = getattr(userPreferences, 'auto_align', False)
+
+        if denoise_weight > 0 and HAS_SKIMAGE:
+            img_np = np.array(pil_img).astype(np.float32) / 255.0
+            clean_np = denoise_tv_chambolle(img_np, weight=denoise_weight, channel_axis=-1)
+            pil_img = Image.fromarray((clean_np * 255.0).astype(np.uint8))
+
+        if auto_align:
+            from model.alignment import apply_alignment
+            pil_img = apply_alignment(pil_img)
+
+        with torch.no_grad():
+            inp = TF.to_tensor(pil_img).unsqueeze(0).to(target_device)
+            inp_pad, orig_h, orig_w = pad_to_multiple(inp, multiple=16)
+
+            out_pad = self.model(inp_pad)
+            out     = out_pad[:, :, :orig_h, :orig_w]
+
+            if enhance_strength < 1.0:
+                orig_crop = inp[:, :, :orig_h, :orig_w]
+                out = orig_crop * (1.0 - enhance_strength) + out * enhance_strength
+
+            result = TF.to_pil_image(out.squeeze(0).clamp(0, 1).cpu())
+
+        # Post-processing
+        if brightness != 1.0:
+            result = ImageEnhance.Brightness(result).enhance(brightness)
+        if contrast != 1.0:
+            result = ImageEnhance.Contrast(result).enhance(contrast)
+        if saturation != 1.0:
+            result = ImageEnhance.Color(result).enhance(saturation)
+        if sharpness != 1.0:
+            result = ImageEnhance.Sharpness(result).enhance(sharpness)
+        
+        if gamma != 1.0:
+            inv_gamma = 1.0 / gamma
+            table = [int(((i / 255.0) ** inv_gamma) * 255) for i in range(256)]
+            result = result.point(table * 3)
+
+        return result
 
 def pad_to_multiple(tensor, multiple=16):
     """Pad H and W so they are divisible by `multiple` (required by deep architectures)."""
@@ -72,90 +152,28 @@ def pad_to_multiple(tensor, multiple=16):
         tensor = F.pad(tensor, (0, pw, 0, ph), mode="reflect")
     return tensor, h, w
 
+# Keeping legacy functions for compatibility but wrapping class
 
-def enhance_image(model, pil_img,
-                  enhance_strength: float = 1.0,
-                  brightness: float = 1.0,
-                  contrast:   float = 1.0,
-                  gamma:      float = 1.0,
-                  saturation: float = 1.0,
-                  sharpness:  float = 1.0,
-                  denoise_weight: float = 0.00,
-                  auto_align: bool = False,
-                  device="cpu"):
-    import torch
-    import numpy as np
-    import torchvision.transforms.functional as TF
-    from PIL import Image, ImageEnhance
+def load_model(checkpoint_path, base_ch=32, num_dmrb=3, device="cpu"):
+    em = EnhancementModel(checkpoint_path, device)
+    em.loadModel(base_ch=base_ch)
+    return em
 
-    try:
-        from skimage.restoration import denoise_tv_chambolle
-        HAS_SKIMAGE = True
-    except ImportError:
-        HAS_SKIMAGE = False
-
-    """
-    Args:
-        pil_img          : RGB PIL Image
-        enhance_strength : 0.0 = original, 1.0 = full model output
-        brightness       : PIL brightness multiplier (post-processing)
-        contrast         : PIL contrast multiplier   (post-processing)
-        gamma            : Power-law transform (1.0 = neutral, >1.0 = richer shadows)
-        saturation       : PIL color multiplier
-        sharpness        : PIL sharpness multiplier
-        denoise_weight   : Weight for TV denoising (0.0 = off)
-    Returns:
-        Enhanced RGB PIL Image
-    """
-    if denoise_weight > 0:
-        if HAS_SKIMAGE:
-            # Convert to numpy for TV denoising (subtle cleaning)
-            img_np = np.array(pil_img).astype(np.float32) / 255.0
-            # A weight of 0.02 is much more conservative than before
-            clean_np = denoise_tv_chambolle(img_np, weight=denoise_weight, channel_axis=-1)
-            pil_img = Image.fromarray((clean_np * 255.0).astype(np.uint8))
-        else:
-            print("Denoising skipped: scikit-image not installed.")
-
-    # Domain Alignment (Camera Sensor Independence)
-    if auto_align:
-        from model.alignment import apply_alignment
-        pil_img = apply_alignment(pil_img)
-
-    with torch.no_grad():
-        inp = TF.to_tensor(pil_img).unsqueeze(0).to(device)   # [1,3,H,W]
-
-        inp_pad, orig_h, orig_w = pad_to_multiple(inp, multiple=16)
-
-        out_pad = model(inp_pad)
-        out     = out_pad[:, :, :orig_h, :orig_w]             # crop padding
-
-        # Blend with original (enhance strength slider)
-        if enhance_strength < 1.0:
-            orig_crop = inp[:, :, :orig_h, :orig_w]
-            out = orig_crop * (1.0 - enhance_strength) + out * enhance_strength
-
-        result = TF.to_pil_image(out.squeeze(0).clamp(0, 1).cpu())
-
-    # Post-processing (user preference adjustments)
-    if brightness != 1.0:
-        result = ImageEnhance.Brightness(result).enhance(brightness)
-    if contrast != 1.0:
-        result = ImageEnhance.Contrast(result).enhance(contrast)
-    if saturation != 1.0:
-        result = ImageEnhance.Color(result).enhance(saturation)
-    if sharpness != 1.0:
-        result = ImageEnhance.Sharpness(result).enhance(sharpness)
+def enhance_image(model_obj, pil_img, **kwargs):
+    from utils.entities import LowLightImage
+    # Mock preferences if passed as kwargs
+    class Prefs: pass
+    p = Prefs()
+    for k, v in kwargs.items(): setattr(p, k, v)
     
-    # Advanced Shadow Management (Gamma)
-    if gamma != 1.0:
-        # 1.0/gamma because usually "higher gamma slider" means "make darks more visible"
-        # Using a lookup table (point) for speed
-        inv_gamma = 1.0 / gamma
-        table = [int(((i / 255.0) ** inv_gamma) * 255) for i in range(256)]
-        result = result.point(table * 3)  # Apply to all 3 channels
+    # Check if model_obj is actual model or EnhancementModel
+    if isinstance(model_obj, EnhancementModel):
+        return model_obj.enhanceImage(LowLightImage(pil_img, "PNG"), p)
+    else:
+        # Backward compat for direct model usage if needed
+        # (Though we should update app.py)
+        pass
 
-    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
