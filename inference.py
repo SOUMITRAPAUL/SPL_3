@@ -107,27 +107,53 @@ class EnhancementModel:
             img_np = np.array(pil_img).astype(np.float32) / 255.0
             clean_np = denoise_tv_chambolle(img_np, weight=denoise_weight, channel_axis=-1)
             pil_img = Image.fromarray((clean_np * 255.0).astype(np.uint8))
+            del img_np, clean_np
 
         if auto_align:
             from model.alignment import apply_alignment
+            prev_pil = pil_img
             pil_img = apply_alignment(pil_img)
+            # Ensure the previous image is closed if it was opened from file
+            if prev_pil != lowLightImage.data:
+                prev_pil.close()
 
+        import gc
         with torch.no_grad():
             inp = TF.to_tensor(pil_img).unsqueeze(0).to(target_device)
             inp_pad, orig_h, orig_w = pad_to_multiple(inp, multiple=16)
 
             out_pad = self.model(inp_pad)
-            out     = out_pad[:, :, :orig_h, :orig_w]
+            
+            # Crop to original size
+            out = out_pad[:, :, :orig_h, :orig_w]
+            del out_pad, inp_pad
 
             if enhance_strength < 1.0:
                 orig_crop = inp[:, :, :orig_h, :orig_w]
                 out = orig_crop * (1.0 - enhance_strength) + out * enhance_strength
+                del orig_crop
 
             result = TF.to_pil_image(out.squeeze(0).clamp(0, 1).cpu())
+            
+            # Cleanup tensors
+            del inp, out
+            
+            # Check if device is CUDA (handle both device object and string)
+            is_cuda = False
+            if hasattr(target_device, 'type'):
+                is_cuda = (target_device.type == 'cuda')
+            elif isinstance(target_device, str):
+                is_cuda = ('cuda' in target_device)
+                
+            if is_cuda:
+                torch.cuda.empty_cache()
+            gc.collect()
 
         # Post-processing
         if brightness != 1.0:
-            result = ImageEnhance.Brightness(result).enhance(brightness)
+            temp = ImageEnhance.Brightness(result).enhance(brightness)
+            result.close()
+            result = temp
         if contrast != 1.0:
             result = ImageEnhance.Contrast(result).enhance(contrast)
         if saturation != 1.0:

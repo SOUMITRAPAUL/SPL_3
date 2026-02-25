@@ -61,27 +61,42 @@ class WebApplication:
 
     def startEnhancement(self, file_storage, prefs_dict):
         """Starts the enhancement process mapping to CRC Diagram"""
+        import gc
+        gc.collect() # Pre-emptive cleanup
+        
         if not self._ensure_model_loaded():
             raise RuntimeError(f"Model load failed: {self.load_error}")
         
+        # Use a context manager if possible for the image stream
         img = Image.open(file_storage.stream).convert("RGB")
         img = img.resize((600, 400), Image.LANCZOS)
         
         low_light_image = LowLightImage(data=img, format=file_storage.content_type)
         user_prefs = UserPreferences(**prefs_dict)
         
-        enhanced_pil = self.model_wrapper.enhanceImage(low_light_image, user_prefs)
-        
-        # Convert to Base64
-        buf = io.BytesIO()
-        enhanced_pil.save(buf, format="PNG")
-        b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
-        
-        return {
-            "enhanced_b64": b64_str,
-            "width": 600,
-            "height": 400
-        }
+        try:
+            enhanced_pil = self.model_wrapper.enhanceImage(low_light_image, user_prefs)
+            
+            # Convert to Base64
+            buf = io.BytesIO()
+            enhanced_pil.save(buf, format="PNG")
+            b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
+            
+            enhanced_pil.close()
+            buf.close()
+            
+            # Final result dict
+            res = {
+                "enhanced_b64": b64_str,
+                "width": 600,
+                "height": 400
+            }
+            return res
+        finally:
+            # Crucial: Clean up large objects
+            img.close()
+            del img
+            gc.collect()
 
 web_app = WebApplication()
 app = Flask(__name__)
