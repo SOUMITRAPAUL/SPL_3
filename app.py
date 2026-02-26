@@ -5,15 +5,12 @@ import base64
 import traceback
 from flask import Flask, render_template, request, jsonify
 from PIL import Image
-
 import inference
-
 from dataclasses import dataclass
 from utils.entities import LowLightImage, EnhancedImage
 
 @dataclass
 class UserPreferences:
-    """CRC Class: UserPreferences"""
     enhance_strength: float = 1.0
     brightness: float = 1.0
     contrast: float = 1.0
@@ -29,7 +26,6 @@ class UserPreferences:
                 setattr(self, k, v)
 
 class WebApplication:
-    """CRC Class: WebApplication"""
     def __init__(self):
         self.supportedFormats = ['JPG', 'PNG', 'WEBP', 'BMP', 'TIFF']
         self.uiState = "idle"
@@ -42,15 +38,14 @@ class WebApplication:
         
         try:
             ckpt = None
-            for candidate in ["checkpoints/best1.pth", "checkpoints/best.pth", "checkpoints/lolv2_test.pth"]:
+            for candidate in ["checkpoints/best1.pth", "checkpoints/best.pth", "checkpoints/lolv2_test.pth", "best.pth"]:
                 if os.path.exists(candidate):
                     ckpt = candidate
                     break
             
             if not ckpt:
-                raise FileNotFoundError("Could not find any .pth checkpoint in checkpoints/ folder.")
+                raise FileNotFoundError("Could not find any .pth checkpoint in project root or checkpoints/ folder.")
 
-            print(f"--- WebApplication: Loading Model {ckpt} ---", flush=True)
             from inference import EnhancementModel
             self.model_wrapper = EnhancementModel(ckpt, device="cpu")
             self.model_wrapper.loadModel()
@@ -60,14 +55,12 @@ class WebApplication:
             return False
 
     def startEnhancement(self, file_storage, prefs_dict):
-        """Starts the enhancement process mapping to CRC Diagram"""
         import gc
-        gc.collect() # Pre-emptive cleanup
+        gc.collect() 
         
         if not self._ensure_model_loaded():
             raise RuntimeError(f"Model load failed: {self.load_error}")
         
-        # Use a context manager if possible for the image stream
         img = Image.open(file_storage.stream).convert("RGB")
         img = img.resize((600, 400), Image.LANCZOS)
         
@@ -77,7 +70,6 @@ class WebApplication:
         try:
             enhanced_pil = self.model_wrapper.enhanceImage(low_light_image, user_prefs)
             
-            # Convert to Base64
             buf = io.BytesIO()
             enhanced_pil.save(buf, format="PNG")
             b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -85,7 +77,6 @@ class WebApplication:
             enhanced_pil.close()
             buf.close()
             
-            # Final result dict
             res = {
                 "enhanced_b64": b64_str,
                 "width": 600,
@@ -93,7 +84,6 @@ class WebApplication:
             }
             return res
         finally:
-            # Crucial: Clean up large objects
             img.close()
             del img
             gc.collect()
@@ -128,11 +118,10 @@ def api_enhance():
         gc.collect()
         return jsonify(result)
     except Exception as e:
-        print(f"--- ERROR: {str(e)} ---", flush=True)
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 50000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=False)
 

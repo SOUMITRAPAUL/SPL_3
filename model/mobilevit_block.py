@@ -1,4 +1,3 @@
-
 from torch import nn
 import math
 import torch
@@ -7,35 +6,13 @@ from torch.nn import init as init
 from torch.nn.init import trunc_normal_
 from einops import rearrange
 import numbers
-# from .transformer import TransformerEncoder
 from .architectures import ConvLayer, CBAMBlock, Res_CBAM, ChannelAttention, SpatialAttention
-# from .DRSformer_arch import TransformerBlock
 
 class LFEM(nn.Module):
-    """
-        LFEM: Low Frequency Enhancement Module
-        in_channels: :math:`C_{in}` from an expected input of size :math:`(N, C_{in}, H, W)
-        transformer_dim: Input dimension to the transformer unit. Default: 144
-        ffn_dim: Dimension of the FFN block. Default: 288
-        n_transformer_blocks: Number of transformer blocks. Default: 3
-        head_dim: Head dimension in the multi-head attention. Default: 18
-        attn_dropout: Dropout in multi-head attention. Default: 0.0
-        dropout: Dropout rate. Default: 0.0
-        ffn_dropout: Dropout between FFN layers in transformer. Default: 0.0
-        atch_h: Patch height for unfolding operation. Default: 2
-        patch_w: Patch width for unfolding operation. Default: 2
-        transformer_norm_layer: Normalization layer in the transformer block. Default: layer_norm
-        conv_ksize: The kernel size of convolution. Default: 3
-        The partial network settings were inspired by the paper:
-        MobileViT: Light-weight, general-purpose, and mobile-friendly vision transformer
-            https://arxiv.org/abs/2110.02178
-
-    """
     def __init__(self, in_channels=96, transformer_dim=144, ffn_dim=288,num_topk=50,
                  n_transformer_blocks=3, head_dim=18, attn_dropout=0.0, dropout=0.0,
                  ffn_dropout=0.0, patch_h=2, patch_w=2,transformer_norm_layer="layer_norm", conv_ksize=3):
         super(LFEM, self).__init__()
-        #
         self.local_rep0 = ConvLayer(
             in_channels=in_channels,
             out_channels=transformer_dim,
@@ -117,101 +94,10 @@ class LFEM(nn.Module):
                 m.bias.data.zero_()
 
 
-    # def unfolding(self, feature_map):
-    #     patch_w, patch_h = self.patch_w, self.patch_h
-    #     patch_area = int(patch_w * patch_h)
-    #     batch_size, in_channels, orig_h, orig_w = feature_map.shape
-    #
-    #     new_h = int(math.ceil(orig_h / self.patch_h) * self.patch_h)
-    #     new_w = int(math.ceil(orig_w / self.patch_w) * self.patch_w)
-    #
-    #     interpolate = False
-    #     if new_w != orig_w or new_h != orig_h:
-    #         # Note: Padding can be done, but then it needs to be handled in attention function.
-    #         feature_map = F.interpolate(feature_map, size=(new_h, new_w), mode="bilinear", align_corners=False)
-    #         interpolate = True
-    #
-    #     # number of patches along width and height
-    #     num_patch_w = new_w // patch_w # n_w
-    #     num_patch_h = new_h // patch_h # n_h
-    #     num_patches = num_patch_h * num_patch_w # N
-    #
-    #     # [B, C, H, W] --> [B * C * n_h, p_h, n_w, p_w]
-    #     reshaped_fm = feature_map.reshape(batch_size * in_channels * num_patch_h, patch_h, num_patch_w, patch_w)
-    #     # [B * C * n_h, p_h, n_w, p_w] --> [B * C * n_h, n_w, p_h, p_w]
-    #     transposed_fm = reshaped_fm.transpose(1, 2)
-    #     # [B * C * n_h, n_w, p_h, p_w] --> [B, C, N, P] where P = p_h * p_w and N = n_h * n_w
-    #     reshaped_fm = transposed_fm.reshape(batch_size, in_channels, num_patches, patch_area)
-    #     # [B, C, N, P] --> [B, P, N, C]
-    #     transposed_fm = reshaped_fm.transpose(1, 3)
-    #     # [B, P, N, C] --> [BP, N, C]
-    #     patches = transposed_fm.reshape(batch_size * patch_area, num_patches, -1)
-    #
-    #     info_dict = {
-    #         "orig_size": (orig_h, orig_w),
-    #         "batch_size": batch_size,
-    #         "interpolate": interpolate,
-    #         "total_patches": num_patches,
-    #         "num_patches_w": num_patch_w,
-    #         "num_patches_h": num_patch_h
-    #     }
-    #
-    #     return patches, info_dict
-    #
-    # def folding(self, patches, info_dict):
-    #     n_dim = patches.dim()
-    #     assert n_dim == 3, "Tensor should be of shape BPxNxC. Got: {}".format(patches.shape)
-    #     # [BP, N, C] --> [B, P, N, C]
-    #     patches = patches.contiguous().view(info_dict["batch_size"], self.patch_area, info_dict["total_patches"], -1)
-    #
-    #     batch_size, pixels, num_patches, channels = patches.size()
-    #     num_patch_h = info_dict["num_patches_h"]
-    #     num_patch_w = info_dict["num_patches_w"]
-    #
-    #     # [B, P, N, C] --> [B, C, N, P]
-    #     patches = patches.transpose(1, 3)
-    #
-    #     # [B, C, N, P] --> [B*C*n_h, n_w, p_h, p_w]
-    #     feature_map = patches.reshape(batch_size * channels * num_patch_h, num_patch_w, self.patch_h, self.patch_w)
-    #     # [B*C*n_h, n_w, p_h, p_w] --> [B*C*n_h, p_h, n_w, p_w]
-    #     feature_map = feature_map.transpose(1, 2)
-    #     # [B*C*n_h, p_h, n_w, p_w] --> [B, C, H, W]
-    #     feature_map = feature_map.reshape(batch_size, channels, num_patch_h * self.patch_h, num_patch_w * self.patch_w)
-    #     if info_dict["interpolate"]:
-    #         feature_map = F.interpolate(feature_map, size=info_dict["orig_size"], mode="bilinear", align_corners=False)
-    #     return feature_map
-    #
-    # def forward(self, x):
-    #
-    #     res0 = x
-    #     fm = self.local_rep0(x)
-    #     fm = self.local_rep1(fm)
-    #     res1 = fm
-    #     # convert feature map to patches
-    #     patches, info_dict = self.unfolding(fm)
-    #
-    #     # learn global representations
-    #     patches = self.global_rep(patches)
-    #
-    #     # [B x Patch x Patches x C] --> [B x C x Patches x Patch]
-    #     fm = self.folding(patches=patches, info_dict=info_dict)
-    #
-    #     # fm = self.global_rep(fm)
-    #
-    #     fm = self.conv_1x1_out(torch.cat((res1, fm), dim=1))
-    #     # fm = self.conv_3x3_out(fm)
-    #     fm = res0 + fm
-    #
-    #     return fm
     def forward(self, x):
-
         res1 = x.clone()
         fm = self.local_rep0(x)
-        # fm = self.local_rep1(fm)
-        # fm = self.local(fm)
         res2 = fm
-        # # DRSFormer
-        # fm = self.global_rep(x)
         fm = self.global_rep(fm)
         fm = self.conv_1x1_out(torch.cat((res2, fm), dim=1))
         fm = self.conv_3x3_out(fm)
@@ -223,11 +109,8 @@ class LFEM(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, dim, ffn_expansion_factor, bias):
         super(FeedForward, self).__init__()
-
         hidden_features = int(dim * ffn_expansion_factor)
-
         self.project_in = nn.Conv2d(dim, hidden_features * 2, kernel_size=1, bias=bias)
-
         self.dwconv = nn.Conv2d(hidden_features * 2, hidden_features * 2, kernel_size=3, stride=1, padding=1, groups=hidden_features * 2, bias=bias)
         self.act = nn.GELU()
         self.project_out = nn.Conv2d(hidden_features, dim, kernel_size=1, bias=bias)
@@ -238,69 +121,6 @@ class FeedForward(nn.Module):
         x = self.act(x1) * x2
         x = self.project_out(x)
         return x
-###### Dual Gated Feed-Forward Networ
-# class FeedForward(nn.Module):
-#     def __init__(self, dim, ffn_expansion_factor, bias):
-#         super(FeedForward, self).__init__()
-#
-#         hidden_features = int(dim*ffn_expansion_factor)
-#
-#         self.project_in = nn.Conv2d(dim, hidden_features*2, kernel_size=1, bias=bias)
-#
-#         self.dwconv = nn.Conv2d(hidden_features*2, hidden_features*2, kernel_size=3, stride=1, padding=1, groups=hidden_features*2, bias=bias)
-#
-#         self.project_out = nn.Conv2d(hidden_features, dim, kernel_size=1, bias=bias)
-#
-#     def forward(self, x):
-#         x = self.project_in(x)
-#         x1, x2 = self.dwconv(x).chunk(2, dim=1)
-#         x = F.gelu(x2)*x1 + F.gelu(x1)*x2
-#         x = self.project_out(x)
-#         return x
-
-
-##  Mixed-Scale Feed-forward Network (MSFN)
-# class FeedForward(nn.Module):
-#     def __init__(self, dim, ffn_expansion_factor, bias):
-#         super(FeedForward, self).__init__()
-#
-#         hidden_features = int(dim * ffn_expansion_factor)
-#
-#         self.project_in = nn.Conv2d(dim, hidden_features * 2, kernel_size=1, bias=bias)
-#
-#         self.dwconv3x3 = nn.Conv2d(hidden_features * 2, hidden_features * 2, kernel_size=3, stride=1, padding=1, groups=hidden_features * 2, bias=bias)
-#         self.dwconv5x5 = nn.Conv2d(hidden_features * 2, hidden_features * 2, kernel_size=5, stride=1, padding=2, groups=hidden_features * 2, bias=bias)
-#         self.relu3 = nn.ReLU()
-#         self.relu5 = nn.ReLU()
-#         # self.relu3 = nn.GELU()
-#         # self.relu5 = nn.GELU()
-#
-#         self.dwconv3x3_1 = nn.Conv2d(hidden_features * 2, hidden_features, kernel_size=3, stride=1, padding=1, groups=hidden_features, bias=bias)
-#         self.dwconv5x5_1 = nn.Conv2d(hidden_features * 2, hidden_features, kernel_size=5, stride=1, padding=2, groups=hidden_features, bias=bias)
-#
-#         self.relu3_1 = nn.ReLU()
-#         self.relu5_1 = nn.ReLU()
-#         # self.relu3_1 = nn.GELU()
-#         # self.relu5_1 = nn.GELU()
-#
-#         self.project_out = nn.Conv2d(hidden_features * 2, dim, kernel_size=1, bias=bias)
-#
-#     def forward(self, x):
-#         x = self.project_in(x)
-#         x1_3, x2_3 = self.relu3(self.dwconv3x3(x)).chunk(2, dim=1)
-#         x1_5, x2_5 = self.relu5(self.dwconv5x5(x)).chunk(2, dim=1)
-#
-#         x1 = torch.cat([x1_3, x1_5], dim=1)
-#         x2 = torch.cat([x2_3, x2_5], dim=1)
-#
-#         x1 = self.relu3_1(self.dwconv3x3_1(x1))
-#         x2 = self.relu5_1(self.dwconv5x5_1(x2))
-#
-#         x = torch.cat([x1, x2], dim=1)
-#
-#         x = self.project_out(x)
-#
-#         return x
 
 ##########################################################################
 ## Multi-DConv Head Transposed Self-Attention (MDTA)
@@ -315,24 +135,17 @@ class Trans_Attention(nn.Module):
 
     def forward(self, x):
         b, c, h, w = x.shape
-
         qkv = self.qkv_dwconv(self.qkv(x))
         q, k, v = qkv.chunk(3, dim=1)
-
         q = rearrange(q, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
         k = rearrange(k, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
         v = rearrange(v, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-
         q = torch.nn.functional.normalize(q, dim=-1)
         k = torch.nn.functional.normalize(k, dim=-1)
-
-        attn = (q @ k.transpose(-2, -1)) * self.temperature  # @矩阵乘法运算符
+        attn = (q @ k.transpose(-2, -1)) * self.temperature  
         attn = attn.softmax(dim=-1)
-
         out = (attn @ v)
-
         out = rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
-
         out = self.project_out(out)
         return out
 
@@ -353,22 +166,6 @@ class Attention(nn.Module):
         self.attn3 = torch.nn.Parameter(torch.tensor([0.2]), requires_grad=True)
         self.attn4 = torch.nn.Parameter(torch.tensor([0.2]), requires_grad=True)
 
-        # self.dwconv = nn.Sequential(
-        #     nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim),
-        #     nn.GELU()
-        # )
-        #
-        # self.channel_interaction = nn.Sequential(
-        #     nn.AdaptiveAvgPool2d(1),
-        #     nn.Conv2d(dim, dim // 8, kernel_size=1),
-        #     nn.GELU(),
-        #     nn.Conv2d(dim // 8, dim, kernel_size=1),
-        # )
-        # self.spatial_interaction = nn.Sequential(
-        #     nn.Conv2d(dim, dim // 8, kernel_size=1),
-        #     nn.GELU(),
-        #     nn.Conv2d(dim // 8, 1, kernel_size=1)
-        # )
 
     def forward(self, x):
         b, c, h, w = x.shape
@@ -422,23 +219,19 @@ class Attention(nn.Module):
 
         out = rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
 
-        # v_dw = self.dwconv(v_dw)
-        # s_v_dw = self.spatial_interaction(v_dw)
-        # c_out = self.channel_interaction(out)
-        # out = out * torch.sigmoid(s_v_dw) + v_dw * torch.sigmoid(c_out)
 
         out = self.project_out(out)
         return out
 
 
 
-# 没有TOP-K的cross Attention
+
 class Cross_Attention_1(nn.Module):
     def __init__(self, dim, num_heads, bias):
         super(Cross_Attention_1, self).__init__()
         self.num_heads = num_heads
         self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
-        dwkernel_size = 3  #默认为3
+        dwkernel_size = 3  
         paddings = dwkernel_size // 2
         self.kv = nn.Conv2d(dim, dim * 2, kernel_size=1, bias=bias)
         self.kv_dwconv = nn.Conv2d(dim * 2, dim * 2, kernel_size=dwkernel_size, stride=1, padding=paddings, groups=dim * 2, bias=bias)
@@ -536,57 +329,18 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x):
 
-        # pre-LN
+        
         x = x + self.attn(self.norm1(x))
         x = x + self.ffn(self.norm2(x))
 
         return x
 
-# class Cross_Attention(nn.Module):
-#     def __init__(self, dim, num_heads, bias):
-#         super(Cross_Attention, self).__init__()
-#         self.num_heads = num_heads
-#         self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
-#
-#         self.kv = nn.Conv2d(dim, dim * 2, kernel_size=1, bias=bias)
-#         self.kv_dwconv = nn.Conv2d(dim * 2, dim * 2, kernel_size=3, stride=1, padding=1, groups=dim * 2, bias=bias)
-#
-#         self.q = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
-#         self.q_dwconv = nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim, bias=bias)
-#
-#         self.project_out = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
-#
-#     def forward(self, x, y):
-#         b, c, h, w = x.shape
-#
-#         kv = self.kv_dwconv(self.kv(x))
-#         k, v = kv.chunk(2, dim=1)
-#         q = self.q_dwconv(self.q(y))
-#
-#         q = rearrange(q, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-#         k = rearrange(k, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-#         v = rearrange(v, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-#
-#         q = torch.nn.functional.normalize(q, dim=-1)
-#         k = torch.nn.functional.normalize(k, dim=-1)
-#
-#         attn = (q @ k.transpose(-2, -1)) * self.temperature
-#         attn = attn.softmax(dim=-1)
-#
-#         out = (attn @ v)
-#
-#         out = rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
-#
-#         out = self.project_out(out)
-#         return out
-
-# 适用TOP-K的cross Transformer
 class Cross_Attention(nn.Module):
     def __init__(self, dim, num_heads, bias):
         super(Cross_Attention, self).__init__()
         self.num_heads = num_heads
         self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
-        dwkernel_size = 3  #默认为3
+        dwkernel_size = 3  
         paddings = dwkernel_size // 2
         self.kv = nn.Conv2d(dim, dim * 2, kernel_size=1, bias=bias)
         self.kv_dwconv = nn.Conv2d(dim * 2, dim * 2, kernel_size=dwkernel_size, stride=1, padding=paddings, groups=dim * 2, bias=bias)
@@ -705,11 +459,6 @@ class Pixel_Attention(nn.Module):
 
 
 class LayerNorm_Special(nn.Module):
-    r""" LayerNorm that supports two data formats: channels_last (default) or channels_first.
-    The ordering of the dimensions in the inputs. channels_last corresponds to inputs with
-    shape (batch_size, height, width, channels) while channels_first corresponds to inputs
-    with shape (batch_size, channels, height, width).
-    """
 
     def __init__(self, normalized_shape, eps=1e-6, data_format="channels_last"):
         super().__init__()
@@ -792,7 +541,6 @@ class gnconv(nn.Module):
 
         self.scale = s
         self.softmax = nn.Softmax(dim=-1)
-        print('[gnconv]', order, 'order with dims=', self.dims, 'scale=%.4f' % self.scale)
 
     def forward(self, x, mask=None, dummy=False):
         B, C, H, W = x.shape
@@ -818,8 +566,6 @@ class gnconv(nn.Module):
 
 
 class Block(nn.Module):
-    r""" HorNet block
-    """
 
     def __init__(self, dim, layer_scale_init_value=1e-6, gnconv=gnconv):
         super().__init__()

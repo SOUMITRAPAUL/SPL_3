@@ -4,8 +4,6 @@ import torch
 import pywt
 import math
 from torch.autograd import Function
-# from ..layers.conv_layer import ConvLayer
-
 
 class Layer_norm(nn.Module):
     def __init__(self, num_features):
@@ -38,7 +36,6 @@ class ConvLayer(nn.Module):
                               bias=bias
                               )
         if self.use_act:
-            # self.act = nn.GELU()
             self.act = nn.LeakyReLU(inplace=True)
 
     def forward(self, x):
@@ -59,13 +56,10 @@ class Res_block(nn.Module):
         self.conv1 = ConvLayer(in_channels=in_channels, out_channels=in_channels,
                                kernel_size=3, stride=1, use_act=False, use_norm=False)
 
-        # self.gamma_1 = nn.Parameter(init_values * torch.ones((in_channels)), requires_grad=True) if use_layer_scale else 1
-
     def forward(self, x):
 
         res = self.conv0(x)
         res = self.conv1(res)
-        # res = x + self.gamma_1.view(1, -1, 1, 1) * res
         res = x + res
 
         return res
@@ -146,13 +140,6 @@ class Res_CBAM(nn.Module):
         return res
 
 class SFT(nn.Module):
-    """
-        SFT: Affine transformation
-        in_channels: :math:`C_{in}` from an expected input of size :math:`(N, C_{in}, H, W)
-        mid_channels: :math:`C_{in}` from an expected input of size :math:`(N, C_{in}, H, W)
-        conv_ksize: The kernel size of convolution. Default: 3
-
-    """
     def __init__(self,in_channels=3,
                  out_channels=32,
                  conv_ksize=3):
@@ -177,14 +164,9 @@ class SFT(nn.Module):
         alpha = self.conv0(x[1])
         beta = self.conv1(x[1])
         sft = x[0] * alpha + beta
-        # sft = x[0] * alpha + beta + x[0]
         return sft
 
 class SAM(nn.Module):
-  """Supervised attention module for multi-stage training.
-
-  Introduced by MPRNet [CVPR2021]: https://github.com/swz30/MPRNet
-  """
   def __init__(self, in_channels, kernel_size=1, bias=False):
       super(SAM, self).__init__()
 
@@ -262,17 +244,13 @@ class InvertedResidualBlock(nn.Module):
         self.stride = stride
         self.in_channels = in_channels
         self.out_channels = out_channels
-        # assert stride in [1, 2]
         hidden_dim = int(in_channels * expand_ratio)
         self.is_residual = self.stride == 1 and in_channels == out_channels
         self.conv = nn.Sequential(
-            # pw Point-wise
             nn.Conv2d(in_channels, hidden_dim, 1, 1, 0, bias=False),
             activation(inplace=True),
-            # dw  Depth-wise
             nn.Conv2d(hidden_dim, hidden_dim, kernel_size, stride, kernel_size//2, groups=hidden_dim, bias=False),
             activation(inplace=True),
-            # pw-linear, Point-wise linear
             nn.Conv2d(hidden_dim, out_channels, 1, 1, 0, bias=False),
 
         )
@@ -331,16 +309,6 @@ def same_padding(images, ksizes, strides, rates):
     return images
 
 def extract_image_patches(images, ksizes, strides, rates, padding='same'):
-    """
-    Extract patches from images and put them in the C output dimension.
-    :param padding:
-    :param images: [batch, channels, in_rows, in_cols]. A 4-D Tensor with shape
-    :param ksizes: [ksize_rows, ksize_cols]. The size of the sliding window for
-     each dimension of images
-    :param strides: [stride_rows, stride_cols]
-    :param rates: [dilation_rows, dilation_cols]
-    :return: A Tensor
-    """
     assert len(images.size()) == 4
     assert padding in ['same', 'valid']
     batch_size, channel, height, width = images.size()
@@ -358,26 +326,16 @@ def extract_image_patches(images, ksizes, strides, rates, padding='same'):
                              padding=0,
                              stride=strides)
     patches = unfold(images)
-    return patches  # [N, C*k*k, L], L is the total number of such blocks
+    return patches 
 
 def reverse_patches(images, out_size, ksizes, strides, padding):
-    """
-    Extract patches from images and put them in the C output dimension.
-    :param padding:
-    :param images: [batch, channels, in_rows, in_cols]. A 4-D Tensor with shape
-    :param ksizes: [ksize_rows, ksize_cols]. The size of the sliding window for
-     each dimension of images
-    :param strides: [stride_rows, stride_cols]
-    :param rates: [dilation_rows, dilation_cols]
-    :return: A Tensor
-    """
     unfold = torch.nn.Fold(output_size = out_size,
                             kernel_size=ksizes,
                             dilation=1,
                             padding=padding,
                             stride=strides)
     patches = unfold(images)
-    return patches  # [N, C*k*k, L], L is the total number of such blocks
+    return patches 
 def reduce_mean(x, axis=None, keepdim=False):
     if not axis:
         axis = range(len(x.shape))
@@ -503,13 +461,6 @@ class DWT_2D(nn.Module):
         # return (L, H)
 class LinearLayer(nn.Module):
     def __init__(self, in_features=32, out_features=64, bias=True):
-        """
-            Applies a linear transformation to the input data
-
-            :param in_features: size of each input sample
-            :param out_features:  size of each output sample
-            :param bias: Add bias (learnable) or not
-        """
         super(LinearLayer, self).__init__()
         self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
         self.bias = None
@@ -518,7 +469,6 @@ class LinearLayer(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.reset_params()
-
 
     def reset_params(self):
         if self.weight is not None:
@@ -545,24 +495,17 @@ def Unfolding(feature_map, patch_h, patch_w):
 
     interpolate = False
     if new_w != orig_w or new_h != orig_h:
-        # Note: Padding can be done, but then it needs to be handled in attention function.
         feature_map = F.interpolate(feature_map, size=(new_h, new_w), mode="bilinear", align_corners=False)
         interpolate = True
 
-    # number of patches along width and height
-    num_patch_w = new_w // patch_w # n_w
-    num_patch_h = new_h // patch_h # n_h
-    num_patches = num_patch_h * num_patch_w # N
+    num_patch_w = new_w // patch_w 
+    num_patch_h = new_h // patch_h 
+    num_patches = num_patch_h * num_patch_w 
 
-    # [B, C, H, W] --> [B * C * n_h, p_h, n_w, p_w]
     reshaped_fm = feature_map.reshape(batch_size * in_channels * num_patch_h, patch_h, num_patch_w, patch_w)
-    # [B * C * n_h, p_h, n_w, p_w] --> [B * C * n_h, n_w, p_h, p_w]
     transposed_fm = reshaped_fm.transpose(1, 2)
-    # [B * C * n_h, n_w, p_h, p_w] --> [B, C, N, P] where P = p_h * p_w and N = n_h * n_w
     reshaped_fm = transposed_fm.reshape(batch_size, in_channels, num_patches, patch_area)
-    # [B, C, N, P] --> [B, P, N, C]
     transposed_fm = reshaped_fm.transpose(1, 3)
-    # [B, P, N, C] --> [BP, N, C]
     patches = transposed_fm.reshape(batch_size * patch_area, num_patches, -1)
 
     info_dict = {
@@ -580,21 +523,16 @@ def Folding(patches, info_dict, patch_h, patch_w):
     n_dim = patches.dim()
     patch_area = patch_h * patch_w
     assert n_dim == 3, "Tensor should be of shape BPxNxC. Got: {}".format(patches.shape)
-    # [BP, N, C] --> [B, P, N, C]
     patches = patches.contiguous().view(info_dict["batch_size"], patch_area, info_dict["total_patches"], -1)
 
     batch_size, pixels, num_patches, channels = patches.size()
     num_patch_h = info_dict["num_patches_h"]
     num_patch_w = info_dict["num_patches_w"]
 
-    # [B, P, N, C] --> [B, C, N, P]
     patches = patches.transpose(1, 3)
 
-    # [B, C, N, P] --> [B*C*n_h, n_w, p_h, p_w]
     feature_map = patches.reshape(batch_size * channels * num_patch_h, num_patch_w, patch_h, patch_w)
-    # [B*C*n_h, n_w, p_h, p_w] --> [B*C*n_h, p_h, n_w, p_w]
     feature_map = feature_map.transpose(1, 2)
-    # [B*C*n_h, p_h, n_w, p_w] --> [B, C, H, W]
     feature_map = feature_map.reshape(batch_size, channels, num_patch_h * patch_h, num_patch_w * patch_w)
     if info_dict["interpolate"]:
         feature_map = F.interpolate(feature_map, size=info_dict["orig_size"], mode="bilinear", align_corners=False)
@@ -605,21 +543,13 @@ class Conv2d_cd(nn.Module):
                  padding=1, dilation=1, groups=1, bias=False):
         super(Conv2d_cd, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channles, kernel_size=kernel_size, stride=stride, padding=padding,
-                              dilation=dilation, groups=groups, bias=bias)
-        #self.theta = theta
+                               dilation=dilation, groups=groups, bias=bias)
 
     def forward(self, x):
-        #print('x.shape:', x.shape)
         out_normal = self.conv(x)
-        #print('out_normal.shape:', out_normal.shape)
-        # if math.fabs(self.theta - 0.) < 1e-8:
-        #     return out_normal
-        # else:
-        # [C_out, C_in, kernel_size, kernel_size] = self.conv.weight.shape
         kernel_diff = self.conv.weight.sum(dim=[2, 3], keepdim=True)
         out_diff = F.conv2d(input=x, weight=kernel_diff, bias=self.conv.bias, stride=self.conv.stride,
                             padding=0, groups=self.conv.groups)
-        #print('out_diff.shape', out_diff.shape)
         return out_normal - out_diff
 
 class HDCB(nn.Module):
@@ -686,7 +616,6 @@ class Fuse_HF(nn.Module):
 class make_dense(nn.Module):
   def __init__(self, nChannels, growthRate, kernel_size=3):
     super(make_dense, self).__init__()
-    # self.conv = nn.Conv2d(nChannels, growthRate, kernel_size=kernel_size, padding=(kernel_size-1)//2, bias=False)
     self.conv = ConvLayer(in_channels=nChannels,
                                          out_channels=growthRate,
                                          kernel_size=kernel_size,
@@ -698,7 +627,6 @@ class make_dense(nn.Module):
     out = torch.cat((x, out), 1)
     return out
 
-# Residual dense block (RDB) architecture
 class RDB(nn.Module):
   def __init__(self, nChannels, nDenselayer, growthRate):
     super(RDB, self).__init__()

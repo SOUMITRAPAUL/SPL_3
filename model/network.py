@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pdb import set_trace as stx
 import numbers
 import math
 
@@ -45,7 +44,7 @@ def to_3d(x):
 def to_4d(x, h, w):
     return rearrange(x, 'b (h w) c -> b c h w', h=h, w=w)
 
-## Overlapped image patch embedding with 3x3 Conv
+
 class OverlapPatchEmbed(nn.Module):
     def __init__(self, in_c=3, embed_dim=48, bias=False):
         super(OverlapPatchEmbed, self).__init__()
@@ -113,7 +112,6 @@ class Self_TransformerBlock(nn.Module):
         self.norm2 = LayerNorm(dim, LayerNorm_type)
 
         self.attn2 = Cross_Attention(dim, num_heads, bias)
-        # self.attn2 = Attention(dim, num_heads, bias)
         self.norm3 = LayerNorm(dim, LayerNorm_type)
         self.ffn1 = FeedForward(dim, ffn_expansion_factor, bias)
         self.norm4 = LayerNorm(dim, LayerNorm_type)
@@ -121,11 +119,7 @@ class Self_TransformerBlock(nn.Module):
     def forward(self, x):
 
         x2 = x + self.attn1(self.norm1(x))
-        # x2 = x2 + self.attn2(x, self.norm2(x2))  # 以浅一层的特征x作KV, 更深层次的特征x2作Q默认
-        # x2 = x + self.attn2(x2, self.norm2(x))  # 以浅一层的特征作Q, 更深层次的特征作KV
-        x2 = x2 + self.attn2(self.norm4(x), self.norm2(x2))  # 以浅一层的特征x作KV, 更深层次的特征x2作Q
-        # x2 = x + self.attn2(self.norm2(x2), self.norm4(x))  # 以深层次的特征x2作KV, 以浅一层的特征x作Q
-        # x2 = x2 + self.attn2(self.norm2(x2))  # 取消自Transformer支路
+        x2 = x2 + self.attn2(self.norm4(x), self.norm2(x2)) 
         x2 = x2 + self.ffn1(self.norm3(x2))
 
         return x2
@@ -151,15 +145,12 @@ class Dual_TransformerBlock(nn.Module):
     def forward(self, x):
 
         x2 = self.Self_attn(x[1])
-        # x1 = x[0] + self.attn2(x2, self.norm1(x[0]))    #以浅一层的特征作Q, 更深层次的特征作KV 默认
-        x1 = x2 + self.attn2(self.norm1(x[0]),  self.norm2(x2))  # 以浅一层的特征x[0]作KV, 更深层次的x2作Q
-        # x1 = x[0] + self.attn2(self.norm2(x2), self.norm1(x[0]))  # 以深层次的特征x2作KV, 更浅一层的特征x[0]作Q
+        x1 = x2 + self.attn2(self.norm1(x[0]),  self.norm2(x2)) 
         x1 = x1 + self.ffn2(self.norm3(x1))
         return x1
 
 
 
-## Resizing modules
 class Downsample(nn.Module):
     def __init__(self, n_feat):
         super(Downsample, self).__init__()
@@ -209,8 +200,8 @@ class DRSformer(nn.Module):
                  num_blocks=[2, 2, 2, 2],
                  heads=[8, 8, 8, 8],
                  ffn_expansion_factor=2.66,
-                 bias=False,                  # 默认为True
-                 LayerNorm_type='WithBias',  ## Other option 'BiasFree' 默认用'WithBias'
+                 bias=False,                  
+                 LayerNorm_type='WithBias',  
                  use_layer_scale=False,
                  use_act=False,
                  conv_bias=False,
@@ -224,14 +215,6 @@ class DRSformer(nn.Module):
                                          use_act=use_act,
                                          bias=conv_bias)
 
-        # self.encoder_level0 = Mix_Block(
-        #     dim=dim,
-        #     num_heads=heads[0],
-        #     num_blocks=num_blocks[0],
-        #     ffn_expansion_factor=ffn_expansion_factor,
-        #     bias=bias,
-        #     LayerNorm_type=LayerNorm_type
-        # )
         self.encoder_level1 = nn.Sequential(*[
             Res_block(in_channels=dim)
             for i in range(6)
@@ -244,11 +227,6 @@ class DRSformer(nn.Module):
                                          stride=1,
                                          use_act=use_act,
                                          bias=conv_bias)
-        # self.expand_encoder_channel2 = ConvLayer(in_channels=(dim * 2 ** 0) * 4,
-        #                                          out_channels=(dim * 2 ** 0) * 2,
-        #                                          kernel_size=3,
-        #                                          stride=1,
-        #                                          use_act=False)
 
         self.encoder_level2 = Self_TransformerBlock(
             dim=int(dim * 2 ** 1),
@@ -264,11 +242,6 @@ class DRSformer(nn.Module):
                                          stride=1,
                                          use_act=use_act,
                                          bias=conv_bias)
-        # self.expand_encoder_channel3 = ConvLayer(in_channels=(dim * 2 ** 1) * 4,
-        #                                          out_channels=(dim * 2 ** 1) * 2,
-        #                                          kernel_size=3,
-        #                                          stride=1,
-        #                                          use_act=False)
         self.encoder_level3 =  Self_TransformerBlock(
             dim=int(dim * 2 ** 2),
             num_heads=heads[2],
@@ -284,11 +257,6 @@ class DRSformer(nn.Module):
                                          stride=1,
                                          use_act=use_act,
                                          bias=conv_bias)
-        # self.expand_encoder_channel4 = ConvLayer(in_channels=(dim * 2 ** 2) * 4,
-        #                                          out_channels=(dim * 2 ** 2) * 2,
-        #                                          kernel_size=3,
-        #                                          stride=1,
-        #                                          use_act=False)
         self.latent = Self_TransformerBlock(
             dim=int(dim * 2 ** 3),
             num_heads=heads[3],
@@ -297,7 +265,6 @@ class DRSformer(nn.Module):
             LayerNorm_type=LayerNorm_type,
             use_layer_scale=use_layer_scale
         )
-        ## From Level 4 to Level 3
 
         self.expand_channel4 = ConvLayer(in_channels=int(dim * 2 ** 3),
                                          out_channels=int(dim * 2 ** 4),
@@ -341,10 +308,6 @@ class DRSformer(nn.Module):
             for i in range(1)]
                                     )
 
-        # self.decoder_level1 = nn.Sequential(*[
-        #     Res_block(in_channels=dim)
-        #     for i in range(6)
-        # ])
         self.expand_channel2 = ConvLayer(in_channels=int(dim * 2 ** 1),
                                          out_channels=int(dim * 2 ** 2),
                                          kernel_size=3,
@@ -362,23 +325,17 @@ class DRSformer(nn.Module):
     def forward(self, inp_img):
 
         inp_enc_level1 = self.patch_embed(inp_img)
-        # inp_enc_level1 = self.encoder_level0(inp_enc_level1)
         out_enc_level1 = self.encoder_level1(inp_enc_level1)
 
         inp_enc_level2 = self.dwt(self.reduce_channel2(out_enc_level1))
-        # inp_enc_level2 = self.expand_encoder_channel2(self.dwt(out_enc_level1))
         out_enc_level2 = self.encoder_level2(inp_enc_level2)
 
         inp_enc_level3 = self.dwt(self.reduce_channel3(out_enc_level2))
-        # inp_enc_level3 = self.expand_encoder_channel3(self.dwt(out_enc_level2))
         out_enc_level3 = self.encoder_level3(inp_enc_level3)
 
         inp_enc_level4 = self.dwt(self.reduce_channel4(out_enc_level3))
-        # inp_enc_level4 = self.expand_encoder_channel4(self.dwt(out_enc_level3))
         latent = self.latent(inp_enc_level4)
 
-        ############################################################
-        # U-net up
         inp_dec_level3 = self.idwt(self.expand_channel4(latent))
         out_dec_level3 = self.decoder_level3((out_enc_level3, inp_dec_level3))
 
@@ -387,8 +344,6 @@ class DRSformer(nn.Module):
 
         inp_dec_level1 = self.idwt(self.expand_channel2(out_dec_level2))
         out_dec_level1 = self.decoder_level0((out_enc_level1, inp_dec_level1))
-        # out_dec_level1 = self.decoder_level1(out_dec_level1)
-        # out_dec_level1 = self.decoder_level1(out_enc_level1+inp_dec_level1)
         out_dec_level1 = self.output(out_dec_level1) + inp_img
 
         return out_dec_level1
@@ -400,19 +355,9 @@ if __name__ == '__main__':
 
     input = torch.rand(1, 3, 256, 256)
     model = DRSformer(dim=32)
-    # print(model)
-    # output = model(input)
-    #
-     # from fvcore.nn import FlopCountAnalysis, parameter_count_table
-     #
-     # flops = FlopCountAnalysis(model, input)
-     # print("FLOPs: ", flops.total() / 1000 ** 3)
 
     macs, params_total = ptflops.get_model_complexity_info(model, (3, 256, 256), as_strings=False,
                                                            print_per_layer_stat=True, verbose=False)
     inputs = torch.randn(1, 3, 512, 512)
     flops, params = profile(model, (inputs,))
     print('flops: ', flops / 1000 ** 3, 'params: ', params / 1000 ** 2)
-
-    # print(macs / 1000 ** 3)
-    # print('{:<30}  {:<8}'.format('params_total M: ', params_total / (1000. ** 2)))
