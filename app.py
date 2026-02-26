@@ -3,6 +3,8 @@ import io
 import gc
 import base64
 import traceback
+import threading
+import uuid
 from flask import Flask, render_template, request, jsonify
 from PIL import Image
 import inference
@@ -68,27 +70,55 @@ class WebApplication:
         user_prefs = UserPreferences(**prefs_dict)
         
         try:
+            print(f"--- Starting Enhancement (Strength: {user_prefs.enhance_strength}) ---")
             enhanced_pil = self.model_wrapper.enhanceImage(low_light_image, user_prefs)
             
+            print("Encoding result to Base64...")
             buf = io.BytesIO()
             enhanced_pil.save(buf, format="PNG")
             b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
             
-            enhanced_pil.close()
+            # Clean up immediately after encoding
+            if hasattr(enhanced_pil, 'close'): enhanced_pil.close()
             buf.close()
             
-            res = {
+            gc.collect()
+            return {
                 "enhanced_b64": b64_str,
                 "width": 600,
                 "height": 400
             }
-            return res
+        except Exception as e:
+            print(f"!!! Error in startEnhancement: {str(e)}")
+            raise e
         finally:
             img.close()
             del img
             gc.collect()
+            print("--- Enhancement Step Finished ---")
 
 web_app = WebApplication()
+processing_tasks = {}
+
+def background_enhance(task_id, file_bytes, content_type, prefs_dict):
+    print(f"=== Background Task Started: {task_id} ===")
+    try:
+        class DummyFile:
+            def __init__(self, b, c):
+                self.stream = io.BytesIO(b)
+                self.content_type = c
+            def close(self): self.stream.close()
+        
+        dummy = DummyFile(file_bytes, content_type)
+        result = web_app.startEnhancement(dummy, prefs_dict)
+        processing_tasks[task_id] = {"status": "complete", "result": result}
+        dummy.close()
+        print(f"=== Background Task Success: {task_id} ===")
+    except Exception as e:
+        print(f"=== Background Task FAILED: {task_id} ===")
+        traceback.print_exc()
+        processing_tasks[task_id] = {"status": "error", "message": str(e)}
+
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
 
@@ -99,10 +129,13 @@ def index():
 @app.route("/enhance", methods=["POST"])
 def api_enhance():
     file = request.files.get("file")
-    if not file:
-        return jsonify({"error": "No image uploaded"}), 400
+    if not file: return jsonify({"error": "No image uploaded"}), 400
 
     try:
+        task_id = str(uuid.uuid4())
+        file_bytes = file.read()
+        content_type = file.content_type
+        
         prefs_dict = {
             "enhance_strength": float(request.form.get("enhance", 1.0)),
             "brightness": float(request.form.get("brightness", 1.0)),
@@ -114,14 +147,19 @@ def api_enhance():
             "auto_align": request.form.get("auto_align") == 'true'
         }
 
-        result = web_app.startEnhancement(file, prefs_dict)
-        gc.collect()
-        return jsonify(result)
+        processing_tasks[task_id] = {"status": "processing"}
+        threading.Thread(target=background_enhance, args=(task_id, file_bytes, content_type, prefs_dict)).start()
+        return jsonify({"task_id": task_id})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+@app.route("/task_status/<task_id>")
+def get_task_status(task_id):
+    task = processing_tasks.get(task_id)
+    if not task: return jsonify({"error": "Task not found"}), 404
+    return jsonify(task)
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 50000))
-    app.run(host="0.0.0.0", port=port, debug=False)
-
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

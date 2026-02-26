@@ -65,16 +65,14 @@ const PreferencePanel = {
       s.el.addEventListener('input', () => {
         s.badge.textContent = parseFloat(s.el.value).toFixed(2);
         applyLivePreview();
-        scheduleReEnhance();
       });
     });
 
-    this.alignCheck.addEventListener('change', () => scheduleReEnhance());
+    this.alignCheck.addEventListener('change', () => applyLivePreview());
 
     this.resetBtn.addEventListener('click', () => {
       this.resetToDefaults();
       clearLiveFilter();
-      scheduleReEnhance();
     });
   },
 
@@ -106,9 +104,12 @@ const PreferencePanel = {
 const OutputDisplay = {
   resultsFeed: document.getElementById('resultsFeed'),
   placeholder: document.getElementById('placeholder'),
+  cardFiles: new Map(), // Track File object for each cardId
 
   createResultCard(file) {
     const cardId = 'card-' + Math.random().toString(36).substr(2, 9);
+    this.cardFiles.set(cardId, file);
+
     const card = document.createElement('div');
     card.className = 'result-card';
     card.id = cardId;
@@ -129,9 +130,18 @@ const OutputDisplay = {
       </div>
       <div class="result-card-footer">
         <span class="info">Waiting for enhancement...</span>
-        <a class="btn-primary btn-sm dl-btn hidden" download="enhanced_${file.name}">Download</a>
+        <div class="actions">
+          <button class="btn-ghost btn-sm apply-btn hidden" title="Apply current slider settings to this image">Re-Apply Settings</button>
+          <a class="btn-primary btn-sm dl-btn hidden" download="enhanced_${file.name}">Download</a>
+        </div>
       </div>
     `;
+
+    card.querySelector('.apply-btn').onclick = () => {
+      clearLiveFilter();
+      processFile(file);
+    };
+
     this.resultsFeed.prepend(card);
     file.cardId = cardId;
   },
@@ -143,6 +153,7 @@ const OutputDisplay = {
     const infoEl = card.querySelector('.info');
     const enhImgEl = card.querySelector('.enhanced-img');
     const dlBtn = card.querySelector('.dl-btn');
+    const applyBtn = card.querySelector('.apply-btn');
 
     if (error) {
       statusEl.textContent = 'Error';
@@ -156,6 +167,7 @@ const OutputDisplay = {
     enhImgEl.style.filter = '';
     dlBtn.href = enhImgEl.src;
     dlBtn.classList.remove('hidden');
+    applyBtn.classList.remove('hidden');
 
     statusEl.textContent = 'Done ✓';
     statusEl.className = 'status status-done';
@@ -173,8 +185,6 @@ const placeholder = document.getElementById('placeholder');
 let processingQueue = [];
 let isProcessing = false;
 let lastFile = null;
-let debounceTimer = null;
-const DEBOUNCE_MS = 700;
 
 function applyLivePreview() {
   const brightness = parseFloat(PreferencePanel.sliders.brightness.el.value);
@@ -193,15 +203,6 @@ function applyLivePreview() {
 
 function clearLiveFilter() {
   document.querySelectorAll('.enhanced-img').forEach(img => { img.style.filter = ''; });
-}
-
-function scheduleReEnhance() {
-  clearTimeout(debounceTimer);
-  if (!lastFile) return;
-  debounceTimer = setTimeout(async () => {
-    clearLiveFilter();
-    await processFile(lastFile);
-  }, DEBOUNCE_MS);
 }
 
 enhBtn.addEventListener('click', async () => {
@@ -229,9 +230,11 @@ async function processFile(file) {
   if (!card) return;
   const statusEl = card.querySelector('.status');
   const infoEl = card.querySelector('.info');
-  statusEl.textContent = 'Processing…';
+  const applyBtn = card.querySelector('.apply-btn');
+
+  statusEl.textContent = 'Uploading…';
   statusEl.className = 'status status-processing';
-  infoEl.textContent = 'Sending to model…';
+  if (applyBtn) applyBtn.disabled = true;
 
   const form = new FormData();
   form.append('file', file);
@@ -239,19 +242,47 @@ async function processFile(file) {
   Object.keys(prefs).forEach(k => form.append(k, prefs[k]));
 
   try {
+    // 1. Submit task to server
     const res = await fetch('/enhance', { method: 'POST', body: form });
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      const text = await res.text();
-      throw new Error(`Server error ${res.status}`);
-    }
-    const data = await res.json();
-    if (!res.ok || data.error) throw new Error(data.error || 'Server error');
+    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+    const { task_id, error } = await res.json();
+    if (error) throw new Error(error);
 
-    OutputDisplay.updateCard(file.cardId, data);
-    lastFile = file;
+    // 2. Poll for results (Bypasses browser timeout)
+    statusEl.textContent = 'Processing…';
+    infoEl.textContent = 'Enhancing in background...';
+
+    let completed = false;
+    let errorCount = 0;
+    while (!completed) {
+      await new Promise(r => setTimeout(r, 4000)); // Poll every 4 seconds
+
+      try {
+        const statusRes = await fetch(`/task_status/${task_id}`);
+        if (!statusRes.ok) throw new Error("Lost contact with server");
+
+        const data = await statusRes.json();
+        errorCount = 0;
+
+        if (data.status === 'complete') {
+          OutputDisplay.updateCard(file.cardId, data.result);
+          lastFile = file;
+          completed = true;
+        } else if (data.status === 'error') {
+          throw new Error(data.message || "Model error");
+        }
+      } catch (pollErr) {
+        errorCount++;
+        console.warn(`Retry ${errorCount}/10:`, pollErr);
+        if (errorCount > 10) throw new Error("Connection lost after multiple retries.");
+        infoEl.textContent = `Re-connecting (${errorCount}/10)...`;
+      }
+    }
   } catch (err) {
+    console.error("Task failed:", err);
     OutputDisplay.updateCard(file.cardId, null, err.message);
+  } finally {
+    if (applyBtn) applyBtn.disabled = false;
   }
 }
 
@@ -264,4 +295,3 @@ function showError(msg) {
 // ── Boot ──
 ImageUploadModule.init();
 PreferencePanel.init();
-
